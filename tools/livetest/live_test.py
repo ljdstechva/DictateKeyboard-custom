@@ -224,13 +224,42 @@ def enable_keyboard():
         raise RuntimeError("the keyboard never appeared in `ime list -a`")
     sh(f"ime enable {ime_id}")
     sh(f"ime set {ime_id}")
+    IME_STATE["id"] = ime_id
     log(f"keyboard enabled and selected: {ime_id}")
+
+
+IME_STATE = {}
+
+
+def ensure_keyboard_selected():
+    current = sh("settings get secure default_input_method", check=False).strip()
+    if IME_STATE.get("id") and current != IME_STATE["id"]:
+        log(f"default keyboard was {current!r}, selecting ours again")
+        sh(f"ime set {IME_STATE['id']}", check=False)
+
+
+def dismiss_system_dialogs():
+    """CI emulators often show "<app> isn't responding" on top; answer it with Wait."""
+    for _ in range(4):
+        ns = nodes(dump_ui())
+        if not ns or ns[0].get("package") != "android":
+            return
+        button = next((n for n in ns if n.get("text") == "Wait"), None) or \
+            next((n for n in ns if n.get("text") in ("OK", "Close app", "Close")), None)
+        if button is None:
+            return
+        title = next((n.get("text") for n in ns if n.get("text")), "")
+        log(f"dismissing system dialog {title!r} with {button.get('text')!r}")
+        tap(center(button))
+        time.sleep(2)
 
 
 def open_home():
     sh(f"am force-stop {PKG}")
+    ensure_keyboard_selected()
     sh(f"am start -W -n {ACTIVITY}")
     time.sleep(4)
+    dismiss_system_dialogs()
 
 
 def focus_field(tag):
@@ -427,6 +456,10 @@ def main():
     make_stubs(stubs)
 
     log("device: " + sh("getprop ro.build.version.release").strip() + " / " + sh("wm size").strip())
+    # Let the freshly booted system settle (the launcher is slow under software rendering).
+    sh("settings put global hide_error_dialogs 1", check=False)
+    time.sleep(20)
+    dismiss_system_dialogs()
     adb("install", "-r", "-g", args.apk, timeout=300)
     enable_keyboard()
     # First start writes the datastore; then the test settings are put in as root.
