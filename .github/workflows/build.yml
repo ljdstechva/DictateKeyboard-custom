@@ -107,6 +107,14 @@ jobs:
             -Dorg.gradle.workers.max=2 \
             -x :app:lintVitalAnalyzeBenchmark -x :app:lintVitalReportBenchmark -x :app:lintVitalBenchmark
 
+      # Custom build's own unit tests only; upstream's suites are upstream's business.
+      - name: Unit tests (custom build)
+        run: |
+          ./gradlew :lib:dictate-core:testDebugUnitTest --tests '*NonSpeechTagTest' --stacktrace --no-daemon \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m" \
+            -Dkotlin.compiler.execution.strategy=in-process \
+            -Dorg.gradle.workers.max=2
+
       - name: Inspect APK
         id: inspect
         run: |

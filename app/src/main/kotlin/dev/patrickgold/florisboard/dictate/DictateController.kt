@@ -2235,8 +2235,13 @@ object DictateController {
                 // "This sentence has capitalization and punctuation."). If the result is just that prompt
                 // echoed, treat it as no speech and drop it instead of dumping the prompt into the field.
                 // Skipped for the chat-audio path, whose prompt is an instruction, not a Whisper style hint.
-                if (!chatAudio && DictatePromptDefaults.looksLikeStylePromptEcho(result.text, transcriptionStyleBasePrompt())) {
-                    outcome = "promptEcho"
+                // Custom build: an offline Whisper model answers a quiet recording with "[BLANK_AUDIO]" and
+                // the like, which is no speech as well (more recordings reach it since the offline switch).
+                val nonSpeechOnly = !chatAudio && DictatePromptDefaults.looksLikeNonSpeechOnly(result.text)
+                if (nonSpeechOnly ||
+                    (!chatAudio && DictatePromptDefaults.looksLikeStylePromptEcho(result.text, transcriptionStyleBasePrompt()))
+                ) {
+                    outcome = if (nonSpeechOnly) "nonSpeechTag" else "promptEcho"
                     // Nothing was said, so nothing failed: take the placeholder (#358) back out rather
                     // than leaving a red row offering to re-transcribe silence.
                     pendingHistoryId?.let { DictateHistoryStore.deleteById(appContext, it) }
