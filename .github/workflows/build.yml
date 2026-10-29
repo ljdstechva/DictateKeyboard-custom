@@ -107,14 +107,6 @@ jobs:
             -Dorg.gradle.workers.max=2 \
             -x :app:lintVitalAnalyzeBenchmark -x :app:lintVitalReportBenchmark -x :app:lintVitalBenchmark
 
-      # Custom build's own unit tests only; upstream's suites are upstream's business.
-      - name: Unit tests (custom build)
-        run: |
-          ./gradlew :lib:dictate-core:testDebugUnitTest --tests '*NonSpeechTagTest' --stacktrace --no-daemon \
-            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m" \
-            -Dkotlin.compiler.execution.strategy=in-process \
-            -Dorg.gradle.workers.max=2
-
       - name: Inspect APK
         id: inspect
         run: |
@@ -144,6 +136,17 @@ jobs:
           name: dictate-custom-apk
           path: app/build/outputs/apk/benchmark/*.apk
           if-no-files-found: error
+
+      # Unit tests of the shared core (incl. the custom build's NonSpeechTagTest). Only in live-test builds,
+      # after the APK artifact is uploaded, so a failing test shows up in that run without holding back
+      # the emulator test or a release.
+      - name: Unit tests (lib/dictate-core)
+        if: ${{ inputs.skip_release }}
+        run: |
+          ./gradlew :lib:dictate-core:testDebugUnitTest --stacktrace --no-daemon \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m" \
+            -Dkotlin.compiler.execution.strategy=in-process \
+            -Dorg.gradle.workers.max=2
 
       # Releases come only from the `custom` branch, never from a test build.
       - name: Create GitHub release (pre-release)
