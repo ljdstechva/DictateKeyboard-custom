@@ -61,8 +61,21 @@ jobs:
       - name: Fetch sherpa-onnx native libraries
         run: bash tools/fetch-sherpa-onnx.sh
 
+      - name: Runner resources
+        run: |
+          nproc; free -h; df -h / | tail -n1
+
+      # Private-repo runners have 2 vCPU / 7 GB, so the heap in gradle.properties (6 GB) plus a
+      # separate Kotlin daemon can get the job killed. Override on the command line instead of
+      # editing gradle.properties, keep the compiler in-process, and skip lintVital (6+ min of
+      # release-lint checks that only matter for a Play upload).
       - name: Build benchmark APK
-        run: ./gradlew :app:assembleBenchmark --stacktrace --no-daemon
+        run: |
+          ./gradlew :app:assembleBenchmark --stacktrace --no-daemon \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -XX:+HeapDumpOnOutOfMemoryError" \
+            -Dkotlin.compiler.execution.strategy=in-process \
+            -Dorg.gradle.workers.max=2 \
+            -x :app:lintVitalAnalyzeBenchmark -x :app:lintVitalReportBenchmark -x :app:lintVitalBenchmark
 
       - name: Inspect APK
         id: inspect
