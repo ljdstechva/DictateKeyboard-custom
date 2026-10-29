@@ -891,7 +891,6 @@
     <string name="custom__updates__installed_title" comment="Custom build: group title above the installed version">Installed</string>
     <string name="custom__updates__built_from" comment="Custom build: which release tag and repository this APK came from">Built from {tag} in {repo}</string>
     <string name="custom__updates__last_check" comment="Custom build: when the last update check ran">Last checked {when}</string>
-    <string name="custom__updates__no_token" comment="Custom build: shown when the APK carries no GitHub token">This build has no GitHub token, so it cannot read the private repository. Add the UPDATE_TOKEN secret and rebuild.</string>
     <string name="custom__updates__auto_check__label" comment="Custom build: preference title">Check for updates automatically</string>
     <string name="custom__updates__auto_check__summary" comment="Custom build: preference summary">Looks for a newer release when you open the settings, at most every 6 hours</string>
     <string name="custom__updates__check_now" comment="Custom build: button">Check for updates</string>

@@ -1,10 +1,11 @@
 /*
  * Custom build only: self-update from the private GitHub repository's releases.
  *
- * The repo, the tag this APK was built from and a read-only token are injected by CI into
- * BuildConfig. When CUSTOM_UPDATE_REPO is blank (any non-CI or upstream build) the updater is
- * disabled and none of its UI is shown. Android never installs an APK silently: the last step
- * hands the downloaded file to the system package installer, which asks the user to confirm.
+ * The repo and the tag this APK was built from are injected by CI into BuildConfig. The repo
+ * is public, so no token is needed and none is ever baked into the APK. When
+ * CUSTOM_UPDATE_REPO is blank (any non-CI or upstream build) the updater is disabled and none
+ * of its UI is shown. Android never installs an APK silently: the last step hands the
+ * downloaded file to the system package installer, which asks the user to confirm.
  */
 package dev.patrickgold.florisboard.app.custom
 
@@ -36,14 +37,12 @@ data class CustomRelease(
 object CustomUpdater {
     val REPO: String = BuildConfig.CUSTOM_UPDATE_REPO
     val BUILT_TAG: String = BuildConfig.CUSTOM_RELEASE_TAG
-    private val TOKEN: String = BuildConfig.CUSTOM_UPDATE_TOKEN
     private const val CACHE_DIR = "updates"
 
     /** Minimum gap between automatic checks (6 hours). */
     const val AUTO_CHECK_INTERVAL_MS: Long = 6L * 60L * 60L * 1000L
 
     val enabled: Boolean get() = REPO.isNotBlank()
-    val hasToken: Boolean get() = TOKEN.isNotBlank()
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -56,7 +55,6 @@ object CustomUpdater {
         header("Accept", accept)
         header("X-GitHub-Api-Version", "2022-11-28")
         header("User-Agent", "DictateCustomUpdater/${BuildConfig.VERSION_NAME}")
-        if (TOKEN.isNotBlank()) header("Authorization", "Bearer $TOKEN")
         return this
     }
 
@@ -102,13 +100,8 @@ object CustomUpdater {
     }
 
     private fun httpError(code: Int): String = when (code) {
-        401 -> "GitHub rejected the update token (401). It may have expired: create a new one and rebuild."
-        403 -> "GitHub refused the request (403): rate limit or token without access to the repository."
-        404 -> if (hasToken) {
-            "Repository not found (404). The token may not have access to $REPO."
-        } else {
-            "Repository not found (404). This build has no update token, and the repository is private."
-        }
+        403 -> "GitHub refused the request (403): API rate limit reached, try again later."
+        404 -> "Repository $REPO not found (404). It may have been renamed or made private."
         else -> "GitHub returned HTTP $code."
     }
 
@@ -154,8 +147,7 @@ object CustomUpdater {
 
     /**
      * Streams the release asset to the cache. GitHub answers the asset URL with a redirect to
-     * object storage; OkHttp follows it and drops the Authorization header across hosts, which
-     * is what that storage requires.
+     * object storage, which OkHttp follows.
      */
     suspend fun download(
         context: Context,

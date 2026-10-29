@@ -89,9 +89,6 @@ jobs:
         env:
           CUSTOM_UPDATE_REPO: ${{ github.repository }}
           CUSTOM_RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-          # Fine-grained PAT, read-only Contents on this repo only. Baked into the APK so the
-          # app can read the private releases; without it the updater shows a clear error.
-          CUSTOM_UPDATE_TOKEN: ${{ secrets.UPDATE_TOKEN }}
         run: |
           ./gradlew :app:assembleBenchmark --stacktrace --no-daemon \
             -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -XX:+HeapDumpOnOutOfMemoryError" \
@@ -140,7 +137,7 @@ jobs:
           NOTES=$(printf '%s\n' \
             "Custom build of Dictate Keyboard ${{ steps.tag.outputs.version }} (commit ${GITHUB_SHA::7})." \
             "" \
-            "Package: net.devemperor.dictate.bench (installs alongside the Play Store app)" \
+            "Package: net.devemperor.dictate.bench (installs alongside the Play Store app). No API keys or secrets are in this repo or APK." \
             "Label: Dictate (Custom)" \
             "SHA-256: ${SHA}" \
             "" \

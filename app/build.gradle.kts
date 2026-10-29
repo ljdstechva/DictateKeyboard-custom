@@ -93,7 +93,6 @@ configure<ApplicationExtension> {
         // Custom build: in-app updater (app/custom). CI sets these; blank disables the feature.
         buildConfigField("String", "CUSTOM_UPDATE_REPO", "\"${System.getenv("CUSTOM_UPDATE_REPO").orEmpty()}\"")
         buildConfigField("String", "CUSTOM_RELEASE_TAG", "\"${System.getenv("CUSTOM_RELEASE_TAG").orEmpty()}\"")
-        buildConfigField("String", "CUSTOM_UPDATE_TOKEN", "\"${System.getenv("CUSTOM_UPDATE_TOKEN").orEmpty()}\"")
 
         sourceSets {
             maybeCreate("main").apply {

@@ -118,14 +118,6 @@ fun CustomUpdateScreen() = FlorisScreen {
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                if (!CustomUpdater.hasToken) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = stringRes(R.string.custom__updates__no_token),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
             }
         }
 
