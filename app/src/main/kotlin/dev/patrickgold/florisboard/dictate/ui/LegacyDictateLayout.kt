@@ -1136,7 +1136,8 @@ private fun LegacySpaceKey(
  * Backspace key with the legacy gestures: a tap deletes one character, holding auto-repeats the delete,
  * and swiping left progressively selects text (whole words or single characters) which is deleted on
  * release. Whether the swipe works by words or characters follows the same global setting the modern
- * keyboard uses (Settings → Gestures → "Delete key swipe left"), so both layouts behave identically.
+ * keyboard uses (Settings → Gestures → "Delete key swipe left"), so both layouts behave identically;
+ * so does the hold, which deletes whole words unless "Delete key long press" says characters.
  */
 @Composable
 private fun LegacyBackspaceKey(modifier: Modifier) {
@@ -1157,6 +1158,14 @@ private fun LegacyBackspaceKey(modifier: Modifier) {
                 else -> false
             }
             val stepPx = (if (wordMode) 24.dp else 12.dp).toPx()
+            // The hold repeats a word delete at the modern keyboard's word pace (5 × its 50 ms key repeat),
+            // slow enough to let go after the right word.
+            val holdCode = if (prefs.gestures.deleteKeyLongPress.get() == SwipeAction.DELETE_WORD) {
+                KeyCode.DELETE_WORD
+            } else {
+                KeyCode.DELETE
+            }
+            val holdRepeatMs = if (holdCode == KeyCode.DELETE_WORD) 250L else 55L
             var mode = 0 // 0 = undecided, 1 = swipe-select, 2 = hold-repeat
 
             while (mode == 0) {
@@ -1178,12 +1187,12 @@ private fun LegacyBackspaceKey(modifier: Modifier) {
             }
 
             if (mode == 2) {
-                keyboardManager.tapKey(KeyCode.DELETE)
+                keyboardManager.tapKey(holdCode)
                 feedback.keyPress()
                 while (true) {
-                    val event = withTimeoutOrNull(55L) { awaitPointerEvent() }
+                    val event = withTimeoutOrNull(holdRepeatMs) { awaitPointerEvent() }
                     if (event == null) {
-                        keyboardManager.tapKey(KeyCode.DELETE)
+                        keyboardManager.tapKey(holdCode)
                         feedback.keyPress()
                         continue
                     }

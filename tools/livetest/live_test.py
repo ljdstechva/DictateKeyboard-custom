@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live emulator test for the custom build's offline switch and transcribing animation.
+"""Live emulator test for the custom build's offline switch, transcribing animation and Backspace hold.
 
 Runs on a GitHub-hosted runner next to a booted emulator (see .github/workflows/live-test.yml):
 
@@ -16,8 +16,9 @@ Runs on a GitHub-hosted runner next to a booted emulator (see .github/workflows/
 Scenarios (the mock decides how slow "online" is):
 
   A  online answers after 3 s                -> online text is typed, no offline switch
+  E  Backspace on A's text: tap, then hold   -> a tap deletes one character, a hold deletes whole words
   C  online hangs, no offline model          -> request cancelled at ~10 s, "download an offline model" error
-  D  online connection breaks, model present -> offline model takes over at once (network error path)
+  D  online connection breaks, model present -> offline model takes over at ~10 s (the retries use the wait)
   B  online hangs, offline model present     -> request cancelled at ~10 s, offline model types the text
 
 Everything lands in --out: screenshots, logcat per scenario, UI dumps, mock request log, summary.json.
@@ -49,6 +50,13 @@ HINT_TEXT = "Try out your setup"
 # Smartbar mic on the pixel_6 profile (1080x2400): measured from a CI screenshot of this build first,
 # then upstream's own benchmark position (tools/benchmark_dictation_latency.ps1), then a little higher.
 MIC_CANDIDATES = [(1020, 1574), (1015, 1625), (1020, 1545)]
+# Backspace of the modern keyboard on the same profile (right end of the z row), measured from the
+# A-online-result screenshot of run 40883657387. The rows are anchored to the bottom, so the smartbar
+# shifting the mic does not move it; scenario E checks it with one tap before holding it.
+BACKSPACE = (990, 2050)
+# A hold this long gives two word deletes (the first after the 300 ms long-press delay, then one per
+# 250 ms); deleting characters instead would take about 8 and stop inside a word.
+BACKSPACE_HOLD_MS = 700
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path("livetest-out")
@@ -442,6 +450,37 @@ def scenario_online(mic_cache, wav, stubs):
     check(tag, "mock answered", req.get("outcome") == "answered", json.dumps(req))
 
 
+def ends_on_word(before, after):
+    """True when `after` is `before` with whole words taken off its end, as a word delete leaves it."""
+    kept = after.split()
+    return (len(kept) < len(before.split()) and before.split()[:len(kept)] == kept
+            and before.startswith(after) and (after == "" or after[-1].isspace()))
+
+
+def scenario_hold_backspace(mic_cache, wav, stubs):
+    """Runs straight after A, on the online text A left in the field (the keyboard is still open)."""
+    tag = "E-hold-backspace"
+    start = field_text()
+    if not start or ONLINE_TEXT not in start:
+        raise RuntimeError(f"no text from scenario A to delete: {start!r}")
+    tap(BACKSPACE)
+    time.sleep(1.5)
+    tapped = field_text() or ""
+    check(tag, "a tap deletes one character", tapped == start[:-1], f"{start!r} -> {tapped!r}")
+    texts = [tapped]
+    for hold in (1, 2):
+        sh(f"input swipe {BACKSPACE[0]} {BACKSPACE[1]} {BACKSPACE[0]} {BACKSPACE[1]} {BACKSPACE_HOLD_MS}")
+        time.sleep(1.5)
+        texts.append(field_text() or "")
+        screenshot(f"{tag}-hold{hold}")
+        before, after = texts[-2], texts[-1]
+        gone = len(before.split()) - len(after.split())
+        # Two holds: one could stop on a space by chance even deleting characters, both hardly.
+        check(tag, f"hold {hold} deletes whole words", ends_on_word(before, after) and gone >= 1 and after.strip(),
+              f"{before!r} -> {after!r} ({gone} words)")
+    logcat_save(tag)
+
+
 def scenario_no_model(mic_cache, wav, stubs):
     tag = "C-slow-no-model"
     mock("/control?delay=60&mode=normal")
@@ -585,7 +624,7 @@ def main():
     screenshot("01-home")
 
     mic_cache = {}
-    steps = [("A", scenario_online), ("C", scenario_no_model), ("install-model", None),
+    steps = [("A", scenario_online), ("E", scenario_hold_backspace), ("C", scenario_no_model), ("install-model", None),
              ("D", scenario_network_error), ("B", scenario_slow_with_model)]
     for name, fn in steps:
         try:
