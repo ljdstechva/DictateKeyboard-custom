@@ -77,6 +77,7 @@ import dev.patrickgold.florisboard.dictate.provider.ProviderPreset
 import dev.patrickgold.florisboard.dictate.provider.ProviderRegistry
 import dev.patrickgold.florisboard.dictate.provider.TranscriptionApi
 import dev.patrickgold.florisboard.dictate.provider.TranscriptionRequest
+import dev.patrickgold.florisboard.dictate.provider.TranscriptionResult
 import dev.patrickgold.florisboard.dictate.overlay.AccessibilitySink
 import dev.patrickgold.florisboard.dictate.overlay.DictateAccessibilityService
 import dev.patrickgold.florisboard.dictate.provider.chatModelFor
@@ -1169,10 +1170,8 @@ object DictateController {
     ): Boolean {
         if (kind != DictateApiException.Kind.NETWORK && kind != DictateApiException.Kind.TIMEOUT) return false
         if (preset.transcriptionApi == TranscriptionApi.LOCAL_ONDEVICE) return false
-        val localAccount = prefs.dictate.providerAccounts.get().getOrEmpty(ProviderRegistry.LOCAL.id)
-        val localModel = transcriptionModelFor(context, localAccount, ProviderRegistry.LOCAL)
-        val ready = localModel.isNotBlank() && LocalModelManager.isInstalled(context, localModel)
-        return !(ready && prefs.dictate.localFallbackEnabled.get())
+        val ready = offlineFallbackModel(context) != null
+        return !(ready && offlineFallbackArmed())
     }
 
     /**
@@ -1226,6 +1225,7 @@ object DictateController {
         // goes into the detail popup, where there is room and where the raw provider text for a network
         // failure ("timeout") is next to useless on its own.
         val hint = suggestOnDevice && !outOfCredit
+        val offlineSwitchOn = prefs.dictate.offlineSwitchSeconds.get() > 0
         val detail = listOfNotNull(
             e.message?.takeIf { it.isNotBlank() },
             defaultModelNote(context, stage, e.message),
@@ -1233,6 +1233,7 @@ object DictateController {
         return UiState.Error(
             message = when {
                 outOfCredit -> context.getString(R.string.dictate__error_out_of_credit)
+                hint && offlineSwitchOn -> context.getString(R.string.dictate__error_offline_switch_no_model)
                 hint -> context.getString(R.string.dictate__error_try_on_device)
                 onDevice && e.kind == DictateApiException.Kind.TIMEOUT ->
                     context.getString(R.string.dictate__error_timeout_on_device)
@@ -1241,8 +1242,15 @@ object DictateController {
             kind = e.kind,
             action = action,
             detail = if (hint) {
-                listOfNotNull(detail, context.getString(R.string.dictate__error_try_on_device_detail))
-                    .joinToString("\n\n")
+                val advice = if (offlineSwitchOn) {
+                    context.getString(
+                        R.string.dictate__error_offline_switch_no_model_detail,
+                        prefs.dictate.offlineSwitchSeconds.get(),
+                    )
+                } else {
+                    context.getString(R.string.dictate__error_try_on_device_detail)
+                }
+                listOfNotNull(detail, advice).joinToString("\n\n")
             } else {
                 detail
             },
@@ -1877,6 +1885,8 @@ object DictateController {
         latencyTrace: BatchLatencyTrace = BatchLatencyTrace(),
         // A realtime dictation falling back to batch: what the user took over of its preview (#421).
         handedOver: String = "",
+        // Custom build: a tap on the resend chip. It waits the full request timeout (no offline switch).
+        resend: Boolean = false,
     ) {
         logLatency(latencyTrace, "transcribeEntered")
         val account = if (forceLocal) localTranscriptionAccount() else transcriptionAccount()
@@ -2140,54 +2150,83 @@ object DictateController {
                         tighteningSymbols = appContext.transcriptTighteningSymbols(),
                     ).transcribe(request)
                 } else {
-                    try {
-                        OpenAiCompatibleClient.from(
-                            preset, apiKey,
-                            baseUrlOverride = baseUrlOverrideFor(account),
-                            proxy = prefs.dictate.dictateProxyConfig(),
-                            // Single-call multimodal (issue #130): route audio through chat/completions.
-                            useChatAudio = chatAudio,
-                            trustUserCerts = account.trustUserCerts,
-                            timeoutSeconds = prefs.dictate.requestTimeout.get().toLong(),
-                        ).transcribe(
-                            request,
-                            onRetry = { attempt -> setTranscribing(attempt) },
-                        )
-                    } catch (e: DictateApiException) {
-                        // A provider that will not take the m4a gets the WAV instead (#281). Three of the
-                        // supported providers were added after recording became WAV and have never been
-                        // sent anything else, so this costs one wasted request rather than a broken
-                        // provider — and only ever runs for one that actually rejected the format.
-                        if (packedFrom != null && e.kind == DictateApiException.Kind.FORMAT_NOT_SUPPORTED) {
+                    // Custom build, offline switch: the provider gets what is left of the
+                    // offlineSwitchSeconds budget, counted from the moment "Transcribing" appeared. Past it
+                    // the coroutine is cancelled, which cancels the OkHttp call, and the recording goes to a
+                    // downloaded on-device model below - or fails with "download an offline model".
+                    val switchBudgetMs = offlineSwitchBudgetMillis(source, isReplay || resend)
+                    val cloudCall: suspend () -> TranscriptionResult = {
+                        try {
                             OpenAiCompatibleClient.from(
                                 preset, apiKey,
                                 baseUrlOverride = baseUrlOverrideFor(account),
                                 proxy = prefs.dictate.dictateProxyConfig(),
+                                // Single-call multimodal (issue #130): route audio through chat/completions.
                                 useChatAudio = chatAudio,
                                 trustUserCerts = account.trustUserCerts,
                                 timeoutSeconds = prefs.dictate.requestTimeout.get().toLong(),
                             ).transcribe(
-                                request.copy(audioFile = packedFrom!!),
+                                request,
                                 onRetry = { attempt -> setTranscribing(attempt) },
                             )
+                        } catch (e: DictateApiException) {
+                            // A provider that will not take the m4a gets the WAV instead (#281). Three of
+                            // the supported providers were added after recording became WAV and have never
+                            // been sent anything else, so this costs one wasted request rather than a broken
+                            // provider - and only ever runs for one that actually rejected the format.
+                            if (packedFrom != null && e.kind == DictateApiException.Kind.FORMAT_NOT_SUPPORTED) {
+                                OpenAiCompatibleClient.from(
+                                    preset, apiKey,
+                                    baseUrlOverride = baseUrlOverrideFor(account),
+                                    proxy = prefs.dictate.dictateProxyConfig(),
+                                    useChatAudio = chatAudio,
+                                    trustUserCerts = account.trustUserCerts,
+                                    timeoutSeconds = prefs.dictate.requestTimeout.get().toLong(),
+                                ).transcribe(
+                                    request.copy(audioFile = packedFrom!!),
+                                    onRetry = { attempt -> setTranscribing(attempt) },
+                                )
+                            } else {
+                                throw e
+                            }
+                        }
+                    }
+                    try {
+                        if (switchBudgetMs == null) {
+                            cloudCall()
                         } else {
+                            withTimeoutOrNull(switchBudgetMs) { cloudCall() }
+                                ?: throw offlineSwitchTimeout(preset)
+                        }
+                    } catch (e: DictateApiException) {
                         // Offline fallback (#104): the cloud call failed because we're offline (after its
-                        // retries) — transcribe on-device with the downloaded model instead of erroring.
-                        val fallback = localFallbackProvider(appContext, preset, e) ?: throw e
+                        // retries) or ran past the offline switch - transcribe on-device with the
+                        // downloaded model instead of erroring.
+                        val fallback = localFallbackProvider(appContext, preset, e)
+                        if (e.code == OFFLINE_SWITCH_CODE || fallback != null) {
+                            Log.i(
+                                LATENCY_LOG_TAG,
+                                "flow=${latencyTrace.id} phase=offlineSwitch reason=" +
+                                    (if (e.code == OFFLINE_SWITCH_CODE) "deadline" else e.kind.name) +
+                                    " sinceTranscribingMs=${transcribingElapsedMillis()}" +
+                                    " model=${offlineFallbackModel(appContext) ?: "none"}" +
+                                    " used=${fallback != null}",
+                            )
+                        }
+                        if (fallback == null) throw e
                         LocalTranscriptionProvider.setIdleUnloadMillis(
                             prefs.dictate.localModelUnloadMinutes.get() * 60_000L,
                         )
                         // Sped-up audio (#272) is for the provider that charges by the second, not for the
                         // engine on this phone: the fallback gets the recording as it was.
                         setTranscribing(onDevice = true)
-                        // From here on any failure is the local engine's, not the provider's — which
+                        // From here on any failure is the local engine's, not the provider's - which
                         // decides both the wording of a timeout and whether offering "try on-device"
                         // would be advice to do the thing that just ran out of time (#354).
                         ranOnDevice = true
                         fallback.transcribe(
                             localFallbackFile?.let { request.copy(audioFile = it) } ?: request,
                         )
-                        }
                     }
                 }
                 logLatency(latencyTrace, "providerCompleted", providerStartedNanos)
@@ -2196,8 +2235,13 @@ object DictateController {
                 // "This sentence has capitalization and punctuation."). If the result is just that prompt
                 // echoed, treat it as no speech and drop it instead of dumping the prompt into the field.
                 // Skipped for the chat-audio path, whose prompt is an instruction, not a Whisper style hint.
-                if (!chatAudio && DictatePromptDefaults.looksLikeStylePromptEcho(result.text, transcriptionStyleBasePrompt())) {
-                    outcome = "promptEcho"
+                // Custom build: an offline Whisper model answers a quiet recording with "[BLANK_AUDIO]" and
+                // the like, which is no speech as well (more recordings reach it since the offline switch).
+                val nonSpeechOnly = !chatAudio && DictatePromptDefaults.looksLikeNonSpeechOnly(result.text)
+                if (nonSpeechOnly ||
+                    (!chatAudio && DictatePromptDefaults.looksLikeStylePromptEcho(result.text, transcriptionStyleBasePrompt()))
+                ) {
+                    outcome = if (nonSpeechOnly) "nonSpeechTag" else "promptEcho"
                     // Nothing was said, so nothing failed: take the placeholder (#358) back out rather
                     // than leaving a red row offering to re-transcribe silence.
                     pendingHistoryId?.let { DictateHistoryStore.deleteById(appContext, it) }
@@ -3244,19 +3288,8 @@ object DictateController {
                 }
             } else {
                 if (apiKey.isBlank() && requiresKey(account)) return null
-                try {
-                    OpenAiCompatibleClient.from(
-                        preset, apiKey,
-                        baseUrlOverride = baseUrlOverrideFor(account),
-                        proxy = prefs.dictate.dictateProxyConfig(),
-                        useChatAudio = false,
-                        trustUserCerts = account.trustUserCerts,
-                        timeoutSeconds = prefs.dictate.requestTimeout.get().toLong(),
-                    ).transcribe(request)
-                } catch (e: DictateApiException) {
-                    // A provider that will not take the m4a gets the WAV instead (#281); everything else
-                    // falls through to the on-device engine as before.
-                    if (packed != null && e.kind == DictateApiException.Kind.FORMAT_NOT_SUPPORTED) {
+                val segmentCall: suspend () -> TranscriptionResult = {
+                    try {
                         OpenAiCompatibleClient.from(
                             preset, apiKey,
                             baseUrlOverride = baseUrlOverrideFor(account),
@@ -3264,12 +3297,43 @@ object DictateController {
                             useChatAudio = false,
                             trustUserCerts = account.trustUserCerts,
                             timeoutSeconds = prefs.dictate.requestTimeout.get().toLong(),
-                        ).transcribe(request.copy(audioFile = toUpload))
-                    } else {
-                        val fallback = localFallbackProvider(appContext, preset, e) ?: throw e
-                        // On-device gets the segment as recorded, never the sped-up copy (#272).
-                        fallback.transcribe(if (spedUp != null) request.copy(audioFile = wav) else request)
+                        ).transcribe(request)
+                    } catch (e: DictateApiException) {
+                        // A provider that will not take the m4a gets the WAV instead (#281).
+                        if (packed != null && e.kind == DictateApiException.Kind.FORMAT_NOT_SUPPORTED) {
+                            OpenAiCompatibleClient.from(
+                                preset, apiKey,
+                                baseUrlOverride = baseUrlOverrideFor(account),
+                                proxy = prefs.dictate.dictateProxyConfig(),
+                                useChatAudio = false,
+                                trustUserCerts = account.trustUserCerts,
+                                timeoutSeconds = prefs.dictate.requestTimeout.get().toLong(),
+                            ).transcribe(request.copy(audioFile = toUpload))
+                        } else {
+                            throw e
+                        }
                     }
+                }
+                // Custom build, offline switch: a segment only gets the short budget when there is a
+                // downloaded model to hand it to. Without one a cut-off segment would leave a gap in the
+                // text, so it keeps the full request timeout instead.
+                val switchSeconds = prefs.dictate.offlineSwitchSeconds.get()
+                val segmentBudgetMs = if (switchSeconds > 0 && offlineFallbackModel(appContext) != null) {
+                    switchSeconds * 1000L
+                } else {
+                    null
+                }
+                try {
+                    if (segmentBudgetMs == null) {
+                        segmentCall()
+                    } else {
+                        withTimeoutOrNull(segmentBudgetMs) { segmentCall() } ?: throw offlineSwitchTimeout(preset)
+                    }
+                } catch (e: DictateApiException) {
+                    val fallback = localFallbackProvider(appContext, preset, e) ?: throw e
+                    Log.i(LATENCY_LOG_TAG, "phase=segmentOfflineSwitch reason=${e.code ?: e.kind.name}")
+                    // On-device gets the segment as recorded, never the sped-up copy (#272).
+                    fallback.transcribe(if (spedUp != null) request.copy(audioFile = wav) else request)
                 }
             }
             result.text
@@ -3483,7 +3547,7 @@ object DictateController {
         // The failure it is retrying already has a history row, so this rewrites that one (#358) rather
         // than filing a second entry for the same recording — the chip and the ↻ in the History panel are
         // the same button on the same audio, and they were disagreeing about that.
-        transcribe(context, r.file, r.seconds, gate = false, replayHistoryId = r.historyId)
+        transcribe(context, r.file, r.seconds, gate = false, replayHistoryId = r.historyId, resend = true)
     }
 
     /**
@@ -5043,15 +5107,16 @@ object DictateController {
         activePreset: ProviderPreset,
         error: DictateApiException,
     ): LocalTranscriptionProvider? {
-        if (!prefs.dictate.localFallbackEnabled.get()) return null
+        if (!offlineFallbackArmed()) return null
         if (activePreset.transcriptionApi == TranscriptionApi.LOCAL_ONDEVICE) return null
+        val switchOn = prefs.dictate.offlineSwitchSeconds.get() > 0
         if (error.kind != DictateApiException.Kind.NETWORK &&
-            error.kind != DictateApiException.Kind.TIMEOUT
+            error.kind != DictateApiException.Kind.TIMEOUT &&
+            // Custom build: with the offline switch on, a provider outage (5xx after the retries) goes to
+            // the phone as well - the user asked for text, not for a server error.
+            !(switchOn && error.kind == DictateApiException.Kind.SERVER_ERROR)
         ) return null
-        val localAccount = prefs.dictate.providerAccounts.get().getOrEmpty(ProviderRegistry.LOCAL.id)
-        val localModel = transcriptionModelFor(context, localAccount, ProviderRegistry.LOCAL)
-            .takeIf { it.isNotBlank() } ?: return null
-        if (!LocalModelManager.isInstalled(context, localModel)) return null
+        val localModel = offlineFallbackModel(context) ?: return null
         return LocalTranscriptionProvider(
             LocalTranscriptionProvider.modelDir(context, localModel),
             timeoutMillis = localTimeoutMillis(),
@@ -5068,4 +5133,49 @@ object DictateController {
      * would eventually have finished. The slider goes to 600 s for exactly that case.
      */
     private fun localTimeoutMillis(): Long = prefs.dictate.requestTimeout.get() * 1000L
+
+    // --- Custom build: offline switch ------------------------------------------------------------
+
+    /** Marks the [DictateApiException] thrown when the offline switch stopped waiting for the provider. */
+    private const val OFFLINE_SWITCH_CODE = "custom_offline_switch"
+
+    /** The offline fallback runs when its own toggle is on, or when the offline switch is (custom build). */
+    private fun offlineFallbackArmed(): Boolean =
+        prefs.dictate.localFallbackEnabled.get() || prefs.dictate.offlineSwitchSeconds.get() > 0
+
+    /**
+     * The downloaded on-device model the offline fallback uses: the one chosen for the on-device provider
+     * when it is installed, otherwise the first installed non-streaming model, otherwise null.
+     */
+    private fun offlineFallbackModel(context: Context): String? {
+        val localAccount = prefs.dictate.providerAccounts.get().getOrEmpty(ProviderRegistry.LOCAL.id)
+        val chosen = transcriptionModelFor(context, localAccount, ProviderRegistry.LOCAL)
+        if (chosen.isNotBlank() && LocalModelManager.isInstalled(context, chosen)) return chosen
+        return LocalModelManager.installedIds(context)
+            .firstOrNull { LocalModelCatalog.byId(it)?.isStreaming == false }
+    }
+
+    /** Milliseconds since the current "Transcribing" state began, 0 when not transcribing. */
+    private fun transcribingElapsedMillis(): Long =
+        (_state.value as? UiState.Transcribing)?.let { SystemClock.elapsedRealtime() - it.startedAtMs } ?: 0L
+
+    /**
+     * How long the cloud call may still take before the offline switch takes over, or null for no limit.
+     * Off for a picked file (long by nature, and it has a cancel button) and for a deliberate resend,
+     * which is the user choosing to wait for the provider after all.
+     */
+    private fun offlineSwitchBudgetMillis(source: String, isReplay: Boolean): Long? {
+        val seconds = prefs.dictate.offlineSwitchSeconds.get()
+        if (seconds <= 0 || isReplay || source == DictateHistorySource.IMPORT) return null
+        return (seconds * 1000L - transcribingElapsedMillis()).coerceAtLeast(0L)
+    }
+
+    private fun offlineSwitchTimeout(preset: ProviderPreset): DictateApiException {
+        val seconds = prefs.dictate.offlineSwitchSeconds.get()
+        return DictateApiException(
+            DictateApiException.Kind.TIMEOUT,
+            "${preset.displayName} did not answer within $seconds s, so the offline switch stopped waiting.",
+            code = OFFLINE_SWITCH_CODE,
+        )
+    }
 }

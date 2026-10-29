@@ -1,0 +1,134 @@
+# Live test of the custom build on an Android emulator (GitHub-hosted runner with KVM).
+# Builds the APK with build.yml (no release), then dictates through the real keyboard against a mock
+# OpenAI-compatible server: online fast, online hanging with and without an offline model, and a
+# broken connection. See tools/livetest/live_test.py. Nothing here publishes a release.
+name: Live test (emulator)
+
+on:
+  push:
+    branches: ["feature/**"]
+  workflow_dispatch:
+    inputs:
+      apk_run_id:
+        description: "Reuse the APK artifact of this earlier run id (skips the build)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: livetest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: ${{ github.event_name == 'push' || inputs.apk_run_id == '' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      skip_release: true
+      release_tag: livetest-${{ github.run_number }}
+    secrets: inherit
+
+  emulator:
+    needs: build
+    # Also after a failed build job: the APK artifact may exist (only the unit tests failed); if it
+    # does not, the download step fails at once.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get APK (this run)
+        if: ${{ needs.build.result != 'skipped' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: dictate-custom-apk
+          path: apk
+
+      - name: Get APK (earlier run)
+        if: ${{ needs.build.result == 'skipped' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "${{ inputs.apk_run_id }}" -n dictate-custom-apk -D apk
+
+      - name: APK path
+        id: apk
+        run: |
+          APK=$(ls apk/*.apk | head -n1)
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          sha256sum "$APK"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test speech and tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng sox
+          python -m pip install --quiet grpcio grpcio-tools
+          mkdir -p livetest
+          espeak-ng -v en-us -s 140 -w livetest/speech-22k.wav \
+            "Hello, this is the live test of the offline switch. The quick brown fox jumps over the lazy dog."
+          sox livetest/speech-22k.wav -r 16000 -c 1 -b 16 livetest/speech.wav
+          soxi livetest/speech.wav
+
+      - name: Offline model whisper-tiny.en (same files and hashes as the app's catalog)
+        run: |
+          set -euo pipefail
+          REL=https://github.com/DevEmperor/DictateKeyboard/releases/download/whisper-models-v1
+          D=livetest/model
+          mkdir -p "$D"
+          curl -fsSL -o "$D/encoder.onnx" "$REL/tiny.en-encoder.int8.onnx"
+          curl -fsSL -o "$D/decoder.onnx" "$REL/tiny.en-decoder.int8.onnx"
+          curl -fsSL -o "$D/tokens.txt" "$REL/tiny.en-tokens.txt"
+          curl -fsSL -o "$D/vad.onnx" "$REL/silero_vad.onnx"
+          printf '%s  %s\n' \
+            0ce578b827c94a961aacb8fa14b02f096504b337e5c94be37c36238cbe3e8bc6 "$D/encoder.onnx" \
+            06c0e6ff6348d427e51839219d1c886c18cfdf411e629e33f5e1679bff9c1527 "$D/decoder.onnx" \
+            306cd27f03c1a714eca7108e03d66b7dc042abe8c258b44c199a7ed9838dd930 "$D/tokens.txt" \
+            9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6 "$D/vad.onnx" \
+            | sha256sum -c -
+
+      - name: Start mock speech-to-text server
+        run: |
+          nohup python tools/livetest/mock_stt_server.py --port 8080 > livetest/mock.log 2>&1 &
+          sleep 1
+          curl -fsS localhost:8080/control
+
+      - name: Run live test on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          disk-size: 6000M
+          emulator-boot-timeout: 900
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -camera-front none -grpc 8554
+          script: python tools/livetest/live_test.py --apk "${{ steps.apk.outputs.path }}" --wav livetest/speech.wav --model-dir livetest/model --out livetest/out --audio grpc
+
+      - name: Upload results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: livetest-results
+          path: |
+            livetest/out
+            livetest/mock.log
+            livetest/speech.wav
+          retention-days: 7

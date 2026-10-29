@@ -2015,7 +2015,7 @@
     <string name="dictate__status_idle" comment="Status shown on the Dictate panel when ready to record">Tap to dictate</string>
     <string name="dictate__status_recording" comment="Status shown while recording audio">Recording – tap to stop</string>
     <string name="dictate__status_transcribing" comment="Status shown while the audio is being transcribed">Transcribing…</string>
-    <string name="dictate__status_transcribing_local" comment="Status shown while the on-device model is transcribing, instead of a cloud provider (issues #228/#270)">Transcribing on device…</string>
+    <string name="dictate__status_transcribing_local" comment="Status shown while the on-device model is transcribing, instead of a cloud provider (issues #228/#270)">Transcribing offline…</string>
     <string name="dictate__back_to_keyboard" comment="Content description for the button that returns from the Dictate panel to the typing keyboard">Back to keyboard</string>
 
     <!-- Dictate errors. %s is a provider/system error detail. -->
@@ -2047,6 +2047,8 @@
     <string name="dictate__error_server" comment="Short error: the provider returned a 5xx server error">Provider unavailable – try again</string>
     <string name="dictate__error_try_on_device" comment="Short error replacing the timeout/no-connection headline when the recording never reached the provider and on-device transcription is not set up yet. Keep it short – it has one line on the keyboard.">No connection – try on-device</string>
     <string name="dictate__error_try_on_device_detail" comment="Longer explanation in the error details popup, shown under the raw provider error. Match the wording of the settings screens: 'AI providers' and 'Offline fallback'.">On-device transcription needs no connection at all — useful where a provider is blocked as well as where there is no signal. Set it up under AI providers, then turn on Offline fallback so it takes over by itself.</string>
+    <string name="dictate__error_offline_switch_no_model" comment="Custom build. Short error when the online provider was too slow or unreachable and no offline model is downloaded. One line on the keyboard.">Network issue – download an offline model</string>
+    <string name="dictate__error_offline_switch_no_model_detail" comment="Custom build. Detail popup for the error above. %1$d is the offline-switch time in seconds.">The online provider did not answer in time (slow or no connection), and no offline model is downloaded on this phone, so the recording could not be transcribed. Download one under AI providers, On-device (offline). From then on, a transcription that takes longer than %1$d s online switches to it by itself. Resend tries online again and waits the full request timeout.</string>
     <string name="dictate__action_settings" comment="Button on a fixable error that opens the Dictate provider settings">Open settings</string>
     <string name="dictate__action_error_details" comment="Accessibility label: tapping the error shows the full provider error text">Show error details</string>
     <string name="dictate__error_details_title" comment="Title of the popup that shows the full provider error text">Error details</string>
@@ -2314,6 +2316,9 @@
     <string name="dictate__local_model_family_open" comment="Spoken action label for the row that opens a model family (Whisper, Kroko) and shows the variants inside it">Show variants</string>
     <string name="dictate__local_fallback_title" comment="Title of the toggle that enables on-device transcription as an offline fallback">Offline fallback</string>
     <string name="dictate__local_fallback_summary" comment="Explains the offline fallback toggle">When offline, transcribe on-device with the downloaded model after the provider fails</string>
+    <string name="dictate__offline_switch_title" comment="Custom build. Title of the slider: after how many seconds of online transcribing the downloaded offline model takes over">Switch to offline model after</string>
+    <string name="dictate__offline_switch_summary" comment="Custom build. Summary under the offline switch slider; {v} is the number of seconds">{v} s · if online transcribing takes longer, the downloaded offline model takes over</string>
+    <string name="dictate__offline_switch_off" comment="Custom build. Summary under the offline switch slider when it is set to 0">Off · always wait for the online provider</string>
 
     <!-- Dictate recording settings -->
     <string name="dictate__recording_group" comment="Group title for recording-related settings">Recording</string>

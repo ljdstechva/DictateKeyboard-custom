@@ -154,6 +154,22 @@ object DictatePromptDefaults {
         return long.contains(short) && short.length >= long.length * 6 / 10
     }
 
+    /**
+     * Custom build: true when [transcript] is nothing but Whisper's own non-speech annotations, such as
+     * "[BLANK_AUDIO]", "[ Pause ]" or "(silence)". Offline Whisper models write these for a quiet
+     * recording; typed into the field they look like a bug, so such a result counts as no speech.
+     * A real transcript that merely contains one of them is left alone.
+     */
+    fun looksLikeNonSpeechOnly(transcript: String): Boolean {
+        if (!NON_SPEECH_TAG.containsMatchIn(transcript)) return false
+        return NON_SPEECH_TAG.replace(transcript, " ").none { it.isLetterOrDigit() }
+    }
+
+    private val NON_SPEECH_TAG = Regex(
+        """[\[(]\s*(?:blank[ _]?audio|pause|silence|no[ _]speech|inaudible|music|noise|static)\s*[\])]""",
+        RegexOption.IGNORE_CASE,
+    )
+
     /** Lowercased, letters/digits/space only, whitespace collapsed — for robust echo comparison. */
     private fun normalizeForEcho(s: String): String =
         s.lowercase(Locale.ROOT)

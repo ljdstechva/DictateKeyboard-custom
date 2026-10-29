@@ -11,6 +11,16 @@
 package dev.patrickgold.florisboard.dictate.ui
 
 import android.os.SystemClock
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sin
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -507,50 +517,108 @@ private fun LanguageChip() {
     }
 }
 
+/**
+ * Custom build: the transcribing state as a working "pill" across the bar, so a running transcription
+ * is obvious at a glance - an accent-tinted capsule with a light band sweeping across it, a thin
+ * running progress line along its bottom edge, and an equalizer of bouncing bars in front of the status.
+ * The status says "Transcribing offline" once the on-device model has taken over (offline switch).
+ */
 @Composable
-private fun TranscribingContent(state: DictateController.UiState.Transcribing) {
+private fun RowScope.TranscribingContent(state: DictateController.UiState.Transcribing) {
+    val prefs by FlorisPreferenceStore
+    val accent by prefs.theme.accentColor.collectAsState()
     val transition = rememberInfiniteTransition(label = "transcribing")
-    val rotation by transition.animateFloat(
+    val sweep by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(900)),
-        label = "spin",
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing)),
+        label = "sweep",
+    )
+    val bars by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1000, easing = LinearEasing)),
+        label = "bars",
     )
     val retrying = state.attempt > 1
-    SnyggIcon(
-        imageVector = if (retrying) Icons.Default.CloudOff else Icons.Default.Sync,
+    Box(
         modifier = Modifier
-            .size(18.dp)
-            .then(if (retrying) Modifier else Modifier.rotate(rotation)),
-    )
-    Spacer(modifier = Modifier.width(10.dp))
-    SnyggText(
-        text = if (retrying) {
-            stringRes(R.string.dictate__status_retrying, "attempt" to state.attempt)
-        } else {
-            stringRes(R.string.dictate__status_transcribing)
-        },
-    )
-    // Transcribing is transcribing — the spinner and the wording stay the same wherever it happens. The
-    // phone alongside them says only where: this one is running here, not on a provider's machine. It
-    // matters most right after holding the button to escape a hanging request (#270), where it is the
-    // confirmation that the escape worked.
-    if (state.onDevice) {
-        Spacer(modifier = Modifier.width(8.dp))
-        SnyggIcon(
-            imageVector = Icons.Default.PhoneAndroid,
-            modifier = Modifier.size(16.dp),
-            contentDescription = stringRes(R.string.dictate__status_transcribing_local),
-        )
+            .fillMaxWidth()
+            .fillMaxHeight(0.82f)
+            .clip(RoundedCornerShape(percent = 50))
+            .drawBehind {
+                // Base tint, then a soft bright band travelling left to right across the capsule.
+                drawRect(accent.copy(alpha = 0.14f))
+                val band = size.width * 0.45f
+                val x = -band + (size.width + band) * sweep
+                drawRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(Color.Transparent, accent.copy(alpha = 0.38f), Color.Transparent),
+                        startX = x,
+                        endX = x + band,
+                    ),
+                )
+                // Running progress line on the bottom edge: a short accent segment that loops.
+                val lineH = 3.dp.toPx()
+                val seg = size.width * 0.28f
+                val lx = -seg + (size.width + seg) * ((sweep * 1.6f) % 1f)
+                drawRect(
+                    color = accent,
+                    topLeft = Offset(lx, size.height - lineH),
+                    size = Size(seg, lineH),
+                )
+            }
+            .padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (retrying) {
+                SnyggIcon(imageVector = Icons.Default.CloudOff, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            TranscribingBars(color = accent, phase = bars)
+            Spacer(modifier = Modifier.width(10.dp))
+            SnyggText(
+                text = when {
+                    retrying -> stringRes(R.string.dictate__status_retrying, "attempt" to state.attempt)
+                    state.onDevice -> stringRes(R.string.dictate__status_transcribing_local)
+                    else -> stringRes(R.string.dictate__status_transcribing)
+                },
+            )
+            // The phone says where this one is running: here, not on a provider's machine - after the
+            // offline switch or the hold-to-escape (#270) it confirms the handover worked.
+            if (state.onDevice) {
+                Spacer(modifier = Modifier.width(8.dp))
+                SnyggIcon(
+                    imageVector = Icons.Default.PhoneAndroid,
+                    modifier = Modifier.size(16.dp),
+                    contentDescription = stringRes(R.string.dictate__status_transcribing_local),
+                )
+            }
+            // How long this has been going (#355); last, because it is the detail and not the message.
+            TranscribingElapsed(startedAtMs = state.startedAtMs)
+        }
     }
-    // How long this has been going (#355). A spinner looks identical at second two and at minute seven,
-    // and the wait really can reach minutes — four attempts on a 120 s budget is about eight of them — so
-    // without a number there is no way to tell a slow answer from a dead one. Smaller than the status it
-    // trails, because it is the detail and not the message.
-    //
-    // Last, after the phone icon rather than before it: the icon qualifies the status word ("transcribing
-    // — here"), so splitting the two with a number breaks a phrase apart. The clock belongs at the end.
-    TranscribingElapsed(startedAtMs = state.startedAtMs)
+}
+
+/** Five bouncing equalizer bars, each a little behind the one before it. [phase] runs 0..1. */
+@Composable
+private fun TranscribingBars(color: Color, phase: Float) {
+    Canvas(modifier = Modifier.size(width = 26.dp, height = 20.dp)) {
+        val count = 5
+        val gap = 2.dp.toPx()
+        val barW = (size.width - gap * (count - 1)) / count
+        for (i in 0 until count) {
+            val wave = abs(sin((phase + i * 0.17f) * 2f * PI.toFloat()))
+            val h = size.height * (0.25f + 0.75f * wave)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(i * (barW + gap), (size.height - h) / 2f),
+                size = Size(barW, h),
+                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+            )
+        }
+    }
 }
 
 /**
