@@ -110,6 +110,9 @@ jobs:
 
       - name: Run live test on the emulator
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          # Scenario U reads the release list on the runner too (rate limit), never in the app.
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           api-level: 34
           target: google_apis

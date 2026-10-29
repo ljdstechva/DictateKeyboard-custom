@@ -62,41 +62,64 @@ object CustomUpdater {
 
     /**
      * Newest non-draft release that carries an .apk asset, or null when the repo has none.
-     * GitHub lists releases newest first; pre-releases are included on purpose (CI publishes
-     * every build as a pre-release).
+     * Pre-releases are included on purpose (CI publishes every build as a pre-release).
+     *
+     * "Newest" is the highest tag number, never the list order: GitHub sorts the list by tag
+     * name as text, so v6.4.0-custom.10 comes after v6.4.0-custom.9 … custom.4, at the very
+     * end. Taking the first entry left every phone on custom.9 believing it was up to date.
+     * Hence every page is read (the repo has a handful of releases, the cap only guards
+     * against a runaway loop) and the releases are compared by [parseTag].
      */
     suspend fun fetchLatest(): CustomRelease? = withContext(Dispatchers.IO) {
         if (!enabled) throw UpdateException("Updater is not configured in this build.")
-        val request = Request.Builder()
-            .url("https://api.github.com/repos/$REPO/releases?per_page=10")
-            .github("application/vnd.github+json")
-            .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw UpdateException(httpError(response.code))
-            val body = response.body.string()
-            val arr = JSONArray(body)
-            for (i in 0 until arr.length()) {
-                val rel = arr.getJSONObject(i)
-                if (rel.optBoolean("draft", false)) continue
-                val assets = rel.optJSONArray("assets") ?: continue
-                for (j in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(j)
-                    val name = asset.optString("name")
-                    if (!name.endsWith(".apk", ignoreCase = true)) continue
-                    return@withContext CustomRelease(
-                        tag = rel.optString("tag_name"),
-                        title = rel.optString("name").ifBlank { rel.optString("tag_name") },
-                        publishedAt = rel.optString("published_at"),
-                        notes = rel.optString("body"),
-                        assetName = name,
-                        assetApiUrl = asset.optString("url"),
-                        assetSize = asset.optLong("size", -1L),
-                        htmlUrl = rel.optString("html_url"),
-                    )
+        val releases = mutableListOf<CustomRelease>()
+        for (page in 1..MAX_PAGES) {
+            val request = Request.Builder()
+                .url("https://api.github.com/repos/$REPO/releases?per_page=$PER_PAGE&page=$page")
+                .github("application/vnd.github+json")
+                .build()
+            val count = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw UpdateException(httpError(response.code))
+                val arr = JSONArray(response.body.string())
+                for (i in 0 until arr.length()) {
+                    val rel = arr.getJSONObject(i)
+                    if (rel.optBoolean("draft", false)) continue
+                    val assets = rel.optJSONArray("assets") ?: continue
+                    for (j in 0 until assets.length()) {
+                        val asset = assets.getJSONObject(j)
+                        val name = asset.optString("name")
+                        if (!name.endsWith(".apk", ignoreCase = true)) continue
+                        releases += CustomRelease(
+                            tag = rel.optString("tag_name"),
+                            title = rel.optString("name").ifBlank { rel.optString("tag_name") },
+                            publishedAt = rel.optString("published_at"),
+                            notes = rel.optString("body"),
+                            assetName = name,
+                            assetApiUrl = asset.optString("url"),
+                            assetSize = asset.optLong("size", -1L),
+                            htmlUrl = rel.optString("html_url"),
+                        )
+                        break
+                    }
                 }
+                arr.length()
             }
-            null
+            if (count < PER_PAGE) break
         }
+        newest(releases)
+    }
+
+    private const val PER_PAGE = 100
+    private const val MAX_PAGES = 10
+
+    /**
+     * The release with the highest tag ([parseTag]); a tag in another format only wins when no
+     * tag parses, and then the latest published one does (ISO-8601 times sort as text).
+     */
+    fun newest(releases: List<CustomRelease>): CustomRelease? {
+        val tagged = releases.mapNotNull { rel -> parseTag(rel.tag)?.let { rel to it } }
+        if (tagged.isNotEmpty()) return tagged.maxWithOrNull(Comparator { a, b -> compareTags(a.second, b.second) })?.first
+        return releases.maxByOrNull { it.publishedAt }
     }
 
     private fun httpError(code: Int): String = when (code) {
@@ -118,12 +141,17 @@ object CustomUpdater {
         val theirs = parseTag(release.tag)
         val ours = parseTag(BUILT_TAG)
         if (theirs == null || ours == null) return release.tag != BUILT_TAG
+        return compareTags(theirs, ours) > 0
+    }
+
+    /** Orders two [parseTag] results number by number (6.4.0-custom.10 > 6.4.0-custom.9). */
+    fun compareTags(theirs: List<Int>, ours: List<Int>): Int {
         for (k in 0 until maxOf(theirs.size, ours.size)) {
             val a = theirs.getOrElse(k) { 0 }
             val b = ours.getOrElse(k) { 0 }
-            if (a != b) return a > b
+            if (a != b) return a.compareTo(b)
         }
-        return false
+        return 0
     }
 
     fun cacheDir(context: Context): File = File(context.cacheDir, CACHE_DIR).apply { mkdirs() }

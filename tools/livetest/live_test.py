@@ -20,6 +20,7 @@ Scenarios (the mock decides how slow "online" is):
   C  online hangs, no offline model          -> request cancelled at ~10 s, "download an offline model" error
   D  online connection breaks, model present -> offline model takes over at ~10 s (the retries use the wait)
   B  online hangs, offline model present     -> request cancelled at ~10 s, offline model types the text
+  U  Settings > Updates > Check for updates  -> offers the highest release tag on GitHub (not the first listed)
 
 Everything lands in --out: screenshots, logcat per scenario, UI dumps, mock request log, summary.json.
 Exit code 0 only when every scenario passed.
@@ -47,6 +48,8 @@ CUSTOM_ID = "custom:livetest"
 MOCK = "http://127.0.0.1:8080"
 ONLINE_TEXT = "Mock online transcript"
 HINT_TEXT = "Try out your setup"
+REPO = os.environ.get("GITHUB_REPOSITORY", "ljdstechva/DictateKeyboard-custom")
+RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)-custom\.(\d+)")
 # Smartbar mic on the pixel_6 profile (1080x2400): measured from a CI screenshot of this build first,
 # then upstream's own benchmark position (tools/benchmark_dictation_latency.ps1), then a little higher.
 MIC_CANDIDATES = [(1020, 1574), (1015, 1625), (1020, 1545)]
@@ -481,6 +484,59 @@ def scenario_hold_backspace(mic_cache, wav, stubs):
     logcat_save(tag)
 
 
+def newest_release_tag():
+    """(highest release tag by number, the tag GitHub lists first) for releases carrying an APK."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "dictate-livetest"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=100", headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        rels = [r for r in json.load(resp)
+                if not r["draft"] and any(a["name"].endswith(".apk") for a in r["assets"])]
+    tagged = [(tuple(map(int, m.groups())), r["tag_name"]) for r in rels
+              if (m := RELEASE_TAG.fullmatch(r["tag_name"]))]
+    return max(tagged)[1], rels[0]["tag_name"]
+
+
+def node_with_text(xml, prefix):
+    for n in nodes(xml):
+        if n.get("text", "").startswith(prefix):
+            return n
+    return None
+
+
+def scenario_updater(mic_cache, wav, stubs):
+    """The test build's tag (livetest-N) is not a release tag, so the updater offers whatever it
+    takes for the newest release: that has to be the highest number, not the first in GitHub's list."""
+    tag = "U-updater"
+    expected, listed_first = newest_release_tag()
+    log(f"newest release {expected}; GitHub lists {listed_first} first")
+    sh(f"am force-stop {PKG}")
+    time.sleep(1.5)
+    sh(f"am start -W -a android.intent.action.VIEW -d ui://florisboard/settings/custom-updates -n {ACTIVITY}")
+    time.sleep(4)
+    dismiss_system_dialogs()
+    button = wait_for(lambda: node_with_text(dump_ui(), "Check for updates"), 30, 1.0)
+    if button is None:
+        screenshot(f"{tag}-no-button")
+        raise RuntimeError("Updates screen not shown")
+    tap(center(button))
+    xml = ""
+
+    def offered():
+        nonlocal xml
+        xml = dump_ui()
+        n = node_with_text(xml, "Update available:")
+        return n.get("text") if n is not None else None
+
+    shown = wait_for(offered, 40, 2.0)
+    screenshot(f"{tag}-result")
+    (OUT / f"{tag}-result.xml").write_text(xml)
+    status = [n.get("text") for n in nodes(xml) if n.get("package") == PKG and n.get("text")]
+    check(tag, "offers the highest release tag", shown == f"Update available: {expected}",
+          f"{shown!r}; newest {expected}, listed first {listed_first}" + ("" if shown else f"; screen {status}"))
+
+
 def scenario_no_model(mic_cache, wav, stubs):
     tag = "C-slow-no-model"
     mock("/control?delay=60&mode=normal")
@@ -625,7 +681,7 @@ def main():
 
     mic_cache = {}
     steps = [("A", scenario_online), ("E", scenario_hold_backspace), ("C", scenario_no_model), ("install-model", None),
-             ("D", scenario_network_error), ("B", scenario_slow_with_model)]
+             ("D", scenario_network_error), ("B", scenario_slow_with_model), ("U", scenario_updater)]
     for name, fn in steps:
         try:
             if fn is None:
