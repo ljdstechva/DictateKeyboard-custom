@@ -1308,9 +1308,12 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
             key = "gestures__delete_key_swipe_left",
             default = SwipeAction.DELETE_CHARACTERS_PRECISELY,
         )
+        // Custom build: holding Backspace deletes whole words, not one letter after another. Only the
+        // default changed, so "Delete character" is still one tap away in Settings → Gestures; the
+        // legacy record layout's Backspace follows the same setting (LegacyBackspaceKey).
         val deleteKeyLongPress = enum(
             key = "gestures__delete_key_long_press",
-            default = SwipeAction.DELETE_CHARACTER,
+            default = SwipeAction.DELETE_WORD,
         )
         // On by default (issue #366): for anyone who only taps ?123 nothing changes except that the layer
         // appears under the finger instead of on the lift, and holding it open is the gesture people arrive
