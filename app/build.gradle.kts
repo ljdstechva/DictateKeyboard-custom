@@ -134,6 +134,18 @@ configure<ApplicationExtension> {
                 keyPassword = props.getProperty("keyPassword")
             }
         }
+        // Custom build: pin the debug signing config to an explicit keystore so CI rebuilds keep
+        // the same certificate (AGP 9 otherwise minted a fresh debug key on the runner, which
+        // would make every new APK refuse to install over the previous one). Standard debug
+        // credentials; the file comes from the DEBUG_KEYSTORE_B64 secret in CI.
+        System.getenv("DEBUG_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }?.let { path ->
+            getByName("debug") {
+                storeFile = file(path)
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildTypes {

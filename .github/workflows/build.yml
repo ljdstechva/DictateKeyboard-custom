@@ -17,6 +17,9 @@ on:
 permissions:
   contents: write
 
+env:
+  DEBUG_KEYSTORE_PATH: /home/runner/.android/debug.keystore
+
 concurrency:
   group: build-custom
   cancel-in-progress: false
@@ -53,10 +56,10 @@ jobs:
           if [ -z "${DEBUG_KEYSTORE_B64}" ]; then
             echo "::error::DEBUG_KEYSTORE_B64 secret is missing"; exit 1
           fi
-          mkdir -p "$HOME/.android"
-          echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
-          keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey >/dev/null
-          echo "debug.keystore restored"
+          mkdir -p "$(dirname "$DEBUG_KEYSTORE_PATH")"
+          echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$DEBUG_KEYSTORE_PATH"
+          keytool -list -keystore "$DEBUG_KEYSTORE_PATH" -storepass android -alias androiddebugkey >/dev/null
+          echo "debug.keystore restored to $DEBUG_KEYSTORE_PATH"
 
       - name: Fetch sherpa-onnx native libraries
         run: bash tools/fetch-sherpa-onnx.sh
@@ -93,6 +96,12 @@ jobs:
           # Hard checks: must be the side-by-side package with the custom label.
           "$BT/aapt2" dump badging "$APK" | grep -q "^package: name='net.devemperor.dictate.bench'"
           "$BT/aapt2" dump badging "$APK" | grep -q "application-label:'Dictate (Custom)'"
+          # The APK must be signed with the restored keystore, not a key AGP minted on the runner.
+          EXPECTED=$(keytool -list -v -keystore "$DEBUG_KEYSTORE_PATH" -storepass android -alias androiddebugkey \
+            | grep -m1 'SHA256:' | awk '{print $2}' | tr -d ':' | tr 'A-F' 'a-f')
+          ACTUAL=$("$BT/apksigner" verify --print-certs "$APK" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+          echo "expected cert $EXPECTED / actual cert $ACTUAL"
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::APK signed with the wrong key"; exit 1; }
           VERSION=$(grep '^projectVersionName=' gradle.properties | cut -d= -f2)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
