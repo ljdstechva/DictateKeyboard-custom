@@ -372,6 +372,15 @@ def offline_switch_line(text):
     return m.groups() if m else None
 
 
+SPOKEN_WORDS = ("hello", "live", "test", "offline", "switch", "quick", "brown", "fox", "jumps", "lazy", "dog")
+
+
+def spoken_words(text):
+    """How many words of the played sentence the offline model wrote: proof real speech went in."""
+    found = set(re.findall(r"[a-z]+", (text or "").lower()))
+    return sum(1 for w in SPOKEN_WORDS if w in found)
+
+
 def last_request():
     reqs = mock("/requests")
     return reqs[-1] if reqs else {}
@@ -444,6 +453,7 @@ def scenario_network_error(mic_cache, wav, stubs):
     if line:
         check(tag, "handover within ~10 s", int(line[1]) <= 12500, f"{line[1]} ms")
     check(tag, "offline text typed", text and ONLINE_TEXT not in text, repr(text))
+    check(tag, "offline text is the spoken sentence", spoken_words(text) >= 4, f"{spoken_words(text)} words")
     mock("/control?mode=normal")
 
 
@@ -468,6 +478,7 @@ def scenario_slow_with_model(mic_cache, wav, stubs):
         check(tag, "switch at ~10 s of transcribing", 9000 <= ms <= 12500, f"{ms} ms")
         check(tag, "downloaded model used", line[2] == MODEL_ID and line[3] == "true", repr(line))
     check(tag, "offline text typed (not the online text)", text and ONLINE_TEXT not in text, repr(text))
+    check(tag, "offline text is the spoken sentence", spoken_words(text) >= 4, f"{spoken_words(text)} words")
     req = last_request()
     check(tag, "online request cancelled by the app", req.get("outcome") == "client-closed" and
           req.get("afterSeconds", 99) <= 12.5, json.dumps(req))

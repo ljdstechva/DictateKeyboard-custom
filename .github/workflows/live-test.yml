@@ -104,16 +104,28 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get install -y -qq pulseaudio pulseaudio-utils
-          pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:"$PWD/livetest/pulse.log"
+          pulseaudio --daemonize=yes --exit-idle-time=-1 --log-level=info --log-time=yes \
+            --log-target=file:"$PWD/livetest/pulse.log"
           for i in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
           pactl load-module module-null-sink sink_name=virtmic sink_properties=device.description=LiveTestMic
           pactl load-module module-null-sink sink_name=speaker sink_properties=device.description=LiveTestSpeaker
           pactl set-default-sink speaker
           pactl set-default-source virtmic.monitor
-          SERVER=$(pactl info | sed -n 's/^Server String: //p')
-          echo "PULSE_SERVER=$SERVER" >> "$GITHUB_ENV"
-          pactl info
+          # The emulator's own PulseAudio client may not pass credentials or find a cookie (the first try
+          # ended in "Failed to initialize PA context"), so it gets a socket that needs neither.
+          SOCK=/tmp/livetest-pulse.sock
+          pactl load-module module-native-protocol-unix auth-anonymous=1 socket=$SOCK
+          {
+            echo "PULSE_SERVER=unix:$SOCK"
+            echo "QEMU_AUDIO_DRV=pa"
+            echo "QEMU_PA_SERVER=unix:$SOCK"
+            echo "QEMU_PA_SOURCE=virtmic.monitor"
+            echo "QEMU_PA_SINK=speaker"
+          } >> "$GITHUB_ENV"
+          export PULSE_SERVER=unix:$SOCK
+          pactl info | grep -E 'Server String|Default S'
           pactl list short sources
+          ls "$ANDROID_HOME/emulator/lib64" 2>/dev/null | grep -i -E 'pulse|audio' || echo "no bundled pulse libs"
           # Prove the loop on the host: what is played into virtmic must come back out of its monitor.
           parecord --device=virtmic.monitor --file-format=wav livetest/loopback.wav & REC=$!
           sleep 0.5; paplay --device=virtmic livetest/speech.wav; sleep 0.5; kill $REC || true
