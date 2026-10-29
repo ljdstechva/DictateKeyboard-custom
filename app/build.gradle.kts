@@ -354,7 +354,9 @@ val verifyBergamotLib by tasks.registering {
         }
     }
 }
-tasks.named("preBuild").configure { dependsOn(verifyBergamotLib) }
+// Custom build: libdictate_bergamot.so is not built in CI (needs the NDK + a long Marian build).
+// BergamotNative loads it with runCatching, so without it only offline translation is unavailable.
+// tasks.named("preBuild").configure { dependsOn(verifyBergamotLib) }
 
 fun getGitCommitHash(short: Boolean = false): Provider<String> {
     if (!File(".git").exists()) {

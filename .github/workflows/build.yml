@@ -1,0 +1,115 @@
+# Custom build of Dictate Keyboard (back-gesture fix).
+# Builds the `benchmark` build type: release-optimised (R8), applicationId
+# net.devemperor.dictate.bench, signed with the debug signing config whose keystore
+# comes from the DEBUG_KEYSTORE_B64 secret so every rebuild installs as an update.
+name: Build custom APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (default: v<version>-custom.<run number>)"
+        required: false
+        default: ""
+  push:
+    branches: [custom]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-custom
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-36 build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Restore debug keystore from secret
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEBUG_KEYSTORE_B64}" ]; then
+            echo "::error::DEBUG_KEYSTORE_B64 secret is missing"; exit 1
+          fi
+          mkdir -p "$HOME/.android"
+          echo "$DEBUG_KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
+          keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey >/dev/null
+          echo "debug.keystore restored"
+
+      - name: Fetch sherpa-onnx native libraries
+        run: bash tools/fetch-sherpa-onnx.sh
+
+      - name: Build benchmark APK
+        run: ./gradlew :app:assembleBenchmark --stacktrace --no-daemon
+
+      - name: Inspect APK
+        id: inspect
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          APK=$(ls app/build/outputs/apk/benchmark/*.apk | head -n1)
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "## APK" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          "$BT/aapt2" dump badging "$APK" | grep -E "^package:|application-label:" | tee -a "$GITHUB_STEP_SUMMARY"
+          sha256sum "$APK" | tee -a "$GITHUB_STEP_SUMMARY"
+          "$BT/apksigner" verify --print-certs "$APK" | grep -E "SHA-256|Verified" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Hard checks: must be the side-by-side package with the custom label.
+          "$BT/aapt2" dump badging "$APK" | grep -q "^package: name='net.devemperor.dictate.bench'"
+          "$BT/aapt2" dump badging "$APK" | grep -q "application-label:'Dictate (Custom)'"
+          VERSION=$(grep '^projectVersionName=' gradle.properties | cut -d= -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dictate-custom-apk
+          path: app/build/outputs/apk/benchmark/*.apk
+          if-no-files-found: error
+
+      - name: Create GitHub release (pre-release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-v${{ steps.inspect.outputs.version }}-custom.${{ github.run_number }}}"
+          APK="${{ steps.inspect.outputs.apk }}"
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          NOTES="Custom build of Dictate Keyboard ${{ steps.inspect.outputs.version }} (commit ${GITHUB_SHA::7}).
+
+Package: net.devemperor.dictate.bench (installs alongside the Play Store app)
+Label: Dictate (Custom)
+SHA-256: ${SHA}
+
+Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); offline translation library not bundled."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" --prerelease --target "$GITHUB_SHA" \
+              --title "Dictate (Custom) $TAG" --notes "$NOTES"
+          fi
+          echo "Release: $(gh release view "$TAG" --json url --jq .url)" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -214,6 +214,7 @@ private fun ImeInnerWindow() {
     // Classic keyboard-less dictation layout (issue #125): replaces the typing keyboard in the TEXT
     // slot when enabled. In SWIPE mode a horizontal swipe flips to the modern keyboard and back.
     val legacyLayout by prefs.dictate.legacyLayout.collectAsState()
+    val allowSystemBackGesture by prefs.gestures.allowSystemBackGesture.collectAsState()
     var showModernKeyboard by remember { mutableStateOf(false) }
     // Snap back to the legacy home view whenever the layout leaves the plain typing keyboard (e.g. the
     // emoji/clipboard/dictate panels open), so returning to TEXT lands on the dictation UI again.
@@ -238,7 +239,8 @@ private fun ImeInnerWindow() {
             .ifIsInstance<ImeWindowProps.Fixed>(windowSpec.props) { props ->
                 Modifier
                     .safeDrawingPadding()
-                    .systemGestureExclusion()
+                    // Custom build: only exclude system gestures when the user turned the back gesture off.
+                    .then(if (allowSystemBackGesture) Modifier else Modifier.systemGestureExclusion())
                     .padding(
                         start = props.paddingLeft.coerceAtLeast(0.dp),
                         end = props.paddingRight.coerceAtLeast(0.dp),

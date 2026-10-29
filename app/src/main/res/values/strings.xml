@@ -859,6 +859,8 @@
     <string name="pref__gestures__space_bar_long_press__label" comment="Preference title">Space bar long press</string>
     <string name="pref__gestures__momentary_layer__label" comment="Preference title, keep short">Hold to peek at a layer</string>
     <string name="pref__gestures__momentary_layer__summary" comment="Preference summary, keep short (one line)">Hold ?123, slide onto a character and let go — it is inserted and the letters come back</string>
+    <string name="pref__gestures__allow_system_back_gesture__label" comment="Preference title, keep short">Allow system back gesture over keyboard</string>
+    <string name="pref__gestures__allow_system_back_gesture__summary" comment="Preference summary, keep short (one line)">Let the edge swipe go back while the keyboard is open, like Gboard. Off blocks it over the keyboard</string>
     <string name="pref__gestures__delete_key_swipe_left__label" comment="Preference title">Delete key swipe left</string>
     <string name="pref__gestures__delete_key_long_press__label" comment="Preference title">Delete key long press</string>
     <string name="pref__gestures__swipe_velocity_threshold__label" comment="Preference title">Swipe velocity threshold</string>

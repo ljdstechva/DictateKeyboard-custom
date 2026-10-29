@@ -1310,6 +1310,13 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
             key = "gestures__momentary_layer",
             default = true,
         )
+        // Custom build: the docked keyboard used to claim a system gesture exclusion over its whole
+        // area, which swallowed Android's edge-swipe back gesture while the keyboard was open. On by
+        // default so back works like it does with Gboard/SwiftKey; off restores the upstream behaviour.
+        val allowSystemBackGesture = boolean(
+            key = "gestures__allow_system_back_gesture",
+            default = true,
+        )
         val swipeDistanceThreshold = int(
             key = "gestures__swipe_distance_threshold",
             default = 32,

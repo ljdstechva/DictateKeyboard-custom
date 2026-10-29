@@ -161,6 +161,12 @@ fun GesturesScreen() = FlorisScreen {
                 title = stringRes(R.string.pref__gestures__momentary_layer__label),
                 summary = stringRes(R.string.pref__gestures__momentary_layer__summary),
             )
+            SwitchPreference(
+                prefs.gestures.allowSystemBackGesture,
+                modifier = Modifier.settingsSearchAnchor("pref__gestures__allow_system_back_gesture__label"),
+                title = stringRes(R.string.pref__gestures__allow_system_back_gesture__label),
+                summary = stringRes(R.string.pref__gestures__allow_system_back_gesture__summary),
+            )
             ListPreference(
                 prefs.gestures.deleteKeySwipeLeft,
                 modifier = Modifier.settingsSearchAnchor("pref__gestures__delete_key_swipe_left__label"),
