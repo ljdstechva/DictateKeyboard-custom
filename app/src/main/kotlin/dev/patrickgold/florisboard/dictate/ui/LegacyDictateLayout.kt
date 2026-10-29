@@ -15,6 +15,15 @@ import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import kotlin.math.PI
+import kotlin.math.sin
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -706,6 +715,8 @@ private fun LegacyRecordRow(
                 .semantics { contentDescription = recordA11yName },
             contentAlignment = Alignment.Center,
         ) {
+            // Custom build: a light band sweeping across the big key while it transcribes.
+            if (dictateState is DictateController.UiState.Transcribing) LegacyTranscribingSweep(color = onAccent)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 when {
                     recording != null -> {
@@ -753,9 +764,15 @@ private fun LegacyRecordRow(
                         Icon(Icons.Default.Stop, contentDescription = null, tint = onAccent, modifier = Modifier.size(20.dp))
                     }
                     busy -> {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = onAccent, strokeWidth = 2.dp)
+                        LegacyTranscribingBars(color = onAccent)
                         Spacer(modifier = Modifier.width(10.dp))
-                        Text(text = stringRes(R.string.dictate__status_transcribing), color = onAccent)
+                        val onDevice = (dictateState as? DictateController.UiState.Transcribing)?.onDevice == true
+                        Text(
+                            text = stringRes(
+                                if (onDevice) R.string.dictate__status_transcribing_local else R.string.dictate__status_transcribing,
+                            ),
+                            color = onAccent,
+                        )
                         // Same elapsed readout as the Smartbar (#355) — this layout replaces the keyboard
                         // entirely, so it is the only thing the user has to look at while waiting.
                         (dictateState as? DictateController.UiState.Transcribing)?.let {
@@ -1310,4 +1327,58 @@ private fun computeWordBoundaries(before: String): List<Int> {
 private fun formatElapsed(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)
     return "%d:%02d".format(totalSec / 60L, totalSec % 60L)
+}
+
+/** Custom build: a soft band sweeping over the key and a running line on its bottom edge. */
+@Composable
+private fun BoxScope.LegacyTranscribingSweep(color: Color) {
+    val transition = rememberInfiniteTransition(label = "legacySweep")
+    val sweep by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing)),
+        label = "sweep",
+    )
+    Canvas(modifier = Modifier.matchParentSize()) {
+        val band = size.width * 0.45f
+        val x = -band + (size.width + band) * sweep
+        drawRect(
+            brush = Brush.horizontalGradient(
+                colors = listOf(Color.Transparent, color.copy(alpha = 0.28f), Color.Transparent),
+                startX = x,
+                endX = x + band,
+            ),
+        )
+        val lineH = 3.dp.toPx()
+        val seg = size.width * 0.28f
+        val lx = -seg + (size.width + seg) * ((sweep * 1.6f) % 1f)
+        drawRect(color = color.copy(alpha = 0.9f), topLeft = Offset(lx, size.height - lineH), size = Size(seg, lineH))
+    }
+}
+
+/** Custom build: five bouncing equalizer bars in place of the small spinner. */
+@Composable
+private fun LegacyTranscribingBars(color: Color) {
+    val transition = rememberInfiniteTransition(label = "legacyBars")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1000, easing = LinearEasing)),
+        label = "bars",
+    )
+    Canvas(modifier = Modifier.size(width = 26.dp, height = 20.dp)) {
+        val count = 5
+        val gap = 2.dp.toPx()
+        val barW = (size.width - gap * (count - 1)) / count
+        for (i in 0 until count) {
+            val wave = abs(sin((phase + i * 0.17f) * 2f * PI.toFloat()))
+            val h = size.height * (0.25f + 0.75f * wave)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(i * (barW + gap), (size.height - h) / 2f),
+                size = Size(barW, h),
+                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+            )
+        }
+    }
 }

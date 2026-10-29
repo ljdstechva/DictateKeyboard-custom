@@ -100,6 +100,7 @@ object SettingsSearchIndex {
             keywordsRes = R.string.settings__search__keywords__clear_cache),
         SettingsSearchEntry(R.string.dictate__request_timeout_title, R.string.dictate__providers_title, Routes.Settings.DictateProviders, parentRes = R.string.dictate__title, anchor = "dictate__request_timeout_title",
             keywordsRes = R.string.settings__search__keywords__request_timeout),
+        SettingsSearchEntry(R.string.dictate__offline_switch_title, R.string.dictate__providers_title, Routes.Settings.DictateProviders, parentRes = R.string.dictate__title, anchor = "dictate__offline_switch_title"),
         SettingsSearchEntry(R.string.devtools__title, R.string.settings__other__title, Routes.Settings.Other, anchor = "devtools__title"),
         SettingsSearchEntry(R.string.backup_and_restore__title, R.string.settings__other__title, Routes.Settings.Other),
         SettingsSearchEntry(R.string.backup_and_restore__back_up__title, R.string.settings__other__title, Routes.Settings.Other, anchor = "backup_and_restore__back_up__title"),

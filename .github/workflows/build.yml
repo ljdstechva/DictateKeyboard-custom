@@ -13,6 +13,17 @@ on:
         default: ""
   push:
     branches: [custom]
+  # Used by live-test.yml to build the same APK without publishing anything.
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: false
+        default: ""
+      skip_release:
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -21,7 +32,7 @@ env:
   DEBUG_KEYSTORE_PATH: /home/runner/.android/debug.keystore
 
 concurrency:
-  group: build-custom
+  group: build-${{ github.ref }}-${{ inputs.skip_release && 'test' || 'release' }}
   cancel-in-progress: false
 
 jobs:
@@ -69,7 +80,7 @@ jobs:
       - name: Decide release tag
         id: tag
         env:
-          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_TAG: ${{ inputs.release_tag }}
         run: |
           VERSION=$(grep '^projectVersionName=' gradle.properties | cut -d= -f2)
           TAG="${INPUT_TAG:-v${VERSION}-custom.${{ github.run_number }}}"
@@ -126,7 +137,9 @@ jobs:
           path: app/build/outputs/apk/benchmark/*.apk
           if-no-files-found: error
 
+      # Releases come only from the `custom` branch, never from a test build.
       - name: Create GitHub release (pre-release)
+        if: ${{ github.ref == 'refs/heads/custom' && !inputs.skip_release }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -141,7 +154,7 @@ jobs:
             "Label: Dictate (Custom)" \
             "SHA-256: ${SHA}" \
             "" \
-            "Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); in-app updater under Settings > Updates (custom build); offline translation library not bundled.")
+            "Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); offline switch: online transcription that takes longer than 10 s goes to the downloaded offline model (AI providers > Switch to offline model after); animated transcribing indicator; in-app updater under Settings > Updates (custom build); offline translation library not bundled.")
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --clobber
           else

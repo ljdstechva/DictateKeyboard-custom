@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
@@ -207,6 +208,25 @@ fun DictateProvidersScreen() = FlorisScreen {
             // that could only answer "no API key" at the moment of dictating.
             TranscriptionProviderPreference(
                 entries = ProviderListing.transcriptionChoices(accounts, activeTranscriptionId, isInstalled),
+            )
+            // Custom build: offline switch. After this many seconds of online transcribing the downloaded
+            // on-device model takes over; with none downloaded, the error says to download one. 0 = off.
+            DialogSliderPreference(
+                pref = prefs.dictate.offlineSwitchSeconds,
+                icon = Icons.Default.CloudOff,
+                modifier = Modifier.settingsSearchAnchor("dictate__offline_switch_title"),
+                title = stringRes(R.string.dictate__offline_switch_title),
+                summary = {
+                    if (it <= 0) {
+                        stringRes(R.string.dictate__offline_switch_off)
+                    } else {
+                        stringRes(R.string.dictate__offline_switch_summary, "v" to it)
+                    }
+                },
+                valueLabel = { stringRes(R.string.unit__seconds__symbol, "v" to it) },
+                min = 0,
+                max = 60,
+                stepIncrement = 1,
             )
             // When the active transcription provider runs single-call multimodal (#130), rewording happens
             // inside that one call, so the rewording provider here is currently unused — surfaced as a

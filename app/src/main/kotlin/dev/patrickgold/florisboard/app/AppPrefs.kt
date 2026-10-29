@@ -325,6 +325,15 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
             default = false,
         )
 
+        // Custom build: offline switch. When the cloud provider has not answered within this many
+        // seconds (counted from the moment "Transcribing" appears), the request is aborted and the
+        // recording goes to a downloaded on-device model instead. No model downloaded -> an error that
+        // suggests downloading one; the recording is kept for resend. 0 turns the switch off.
+        val offlineSwitchSeconds = int(
+            key = "dictate__offline_switch_seconds",
+            default = 10,
+        )
+
         // Wear OS standalone (#106): when on, the paired watch is allowed to transcribe by itself and
         // the API key is included in the settings snapshot synced to it (stored private to the watch app).
         // On by default so the watch keeps working when the phone is out of range; it still tethers
