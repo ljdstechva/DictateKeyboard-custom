@@ -5,8 +5,11 @@ Runs on a GitHub-hosted runner next to a booted emulator (see .github/workflows/
 
   * the APK is installed, set as the keyboard and pointed at a mock OpenAI-compatible server on the
     runner (tools/livetest/mock_stt_server.py, reached from the emulator as 10.0.2.2);
-  * speech is a TTS WAV played into a PulseAudio null sink whose monitor is the emulator's microphone
-    (emulator started with -allow-host-audio); --audio grpc streams it over gRPC instead;
+  * speech is a TTS WAV streamed into the emulator microphone over gRPC (tools/inject_emulator_audio.py,
+    40 ms packets: the emulator's injection buffer holds only ~300 ms), and only while the app is
+    recording. --audio pulse plays it into a PulseAudio sink instead, for a desktop emulator started
+    with -allow-host-audio (on GitHub's runners the emulator cannot open PulseAudio). Scenarios A and C
+    need no speech and record silence, so a failing injection cannot spoil them;
   * dictation is started and stopped by tapping the keyboard's mic, exactly as a user would. A tap only
     counts when the app logs phase=captureStarted / phase=stopTapped.
 
@@ -326,12 +329,15 @@ def play_audio(wav, stubs, tag):
         return
     sent = OUT / f"{tag}.sent"
     done = OUT / f"{tag}.done"
-    proc = subprocess.Popen([sys.executable, str(ROOT / "tools/inject_emulator_audio.py"), str(wav),
-                             "--stubs", str(stubs), "--packet-ms", "300",
-                             "--sent-marker", str(sent), "--completed-marker", str(done)])
+    errors = OUT / f"{tag}-inject.txt"
+    with open(errors, "w") as err:
+        proc = subprocess.Popen([sys.executable, str(ROOT / "tools/inject_emulator_audio.py"), str(wav),
+                                 "--stubs", str(stubs), "--packet-ms", "40",
+                                 "--sent-marker", str(sent), "--completed-marker", str(done)],
+                                stdout=err, stderr=subprocess.STDOUT)
     try:
-        if not wait_for(sent.exists, 40, 0.1):
-            raise RuntimeError("audio injection did not finish streaming")
+        if not wait_for(lambda: sent.exists() or proc.poll() is not None, 40, 0.1) or not sent.exists():
+            raise RuntimeError("audio injection failed: " + errors.read_text()[-400:].strip())
     finally:
         try:
             proc.wait(timeout=15)
@@ -341,17 +347,19 @@ def play_audio(wav, stubs, tag):
             marker.unlink(missing_ok=True)
 
 
-AUDIO = {"mode": "pulse", "sink": "virtmic"}
+AUDIO = {"mode": "grpc", "sink": "virtmic"}
 
 
-def record(cache, wav, stubs, tag):
-    """Start dictation with the mic, play the speech into the microphone, stop with the mic.
-
-    Returns the monotonic time of the stop tap."""
+def record(cache, wav, stubs, tag, speech=True):
+    """Start dictation with the mic, put the speech into the microphone (or record ~4 s of silence),
+    stop with the mic. Returns the monotonic time of the stop tap."""
     mic = start_recording(tag, cache)
     time.sleep(0.6)
     screenshot(f"{tag}-recording")
-    play_audio(wav, stubs, tag)
+    if speech:
+        play_audio(wav, stubs, tag)
+    else:
+        time.sleep(4)
     time.sleep(0.4)
     before = phase_count("stopTapped")
     tap(mic)
@@ -395,7 +403,7 @@ def scenario_online(mic_cache, wav, stubs):
     focus_field(tag)
     screenshot(f"{tag}-keyboard")
     logcat_clear()
-    stopped = record(mic_cache, wav, stubs, tag)
+    stopped = record(mic_cache, wav, stubs, tag, speech=False)
     time.sleep(max(0, 1.2 - (time.monotonic() - stopped)))
     screenshot(f"{tag}-transcribing")
     text = wait_for(lambda: (t := field_text()) and ONLINE_TEXT in t and t, 25, 1.0) or field_text()
@@ -414,7 +422,7 @@ def scenario_no_model(mic_cache, wav, stubs):
     open_home()
     focus_field(tag)
     logcat_clear()
-    stopped = record(mic_cache, wav, stubs, tag)
+    stopped = record(mic_cache, wav, stubs, tag, speech=False)
     time.sleep(max(0, 4.0 - (time.monotonic() - stopped)))
     screenshot(f"{tag}-transcribing-4s")
     line = wait_for(lambda: offline_switch_line(latency_lines()), 20, 0.5)
@@ -501,7 +509,7 @@ def main():
     parser.add_argument("--wav", required=True)
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--out", default="livetest-out")
-    parser.add_argument("--audio", choices=["pulse", "grpc"], default="pulse")
+    parser.add_argument("--audio", choices=["pulse", "grpc"], default="grpc")
     parser.add_argument("--pulse-sink", default="virtmic")
     args = parser.parse_args()
     OUT = Path(args.out)
