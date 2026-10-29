@@ -500,10 +500,16 @@ def newest_release_tag():
 
 
 def node_with_text(xml, prefix):
+    # Compare with None, never by truth: an ElementTree node without children is falsy.
     for n in nodes(xml):
         if n.get("text", "").startswith(prefix):
             return n
     return None
+
+
+def text_center(prefix):
+    n = node_with_text(dump_ui(), prefix)
+    return center(n) if n is not None else None
 
 
 def scenario_updater(mic_cache, wav, stubs):
@@ -520,11 +526,13 @@ def scenario_updater(mic_cache, wav, stubs):
        f"-d ui://florisboard/settings/custom-updates -n {ACTIVITY}")
     time.sleep(4)
     dismiss_system_dialogs()
-    button = wait_for(lambda: node_with_text(dump_ui(), "Check for updates"), 30, 1.0)
+    # Wait until the button is enabled again: opening the screen starts a check of its own.
+    time.sleep(3)
+    button = wait_for(lambda: text_center("Check for updates"), 30, 1.0)
     if button is None:
         screenshot(f"{tag}-no-button")
         raise RuntimeError("Updates screen not shown")
-    tap(center(button))
+    tap(button)
     xml = ""
 
     def offered():
