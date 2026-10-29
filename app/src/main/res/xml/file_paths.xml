@@ -19,4 +19,8 @@
     <cache-path
         name="sticker_converted"
         path="sticker-converted/"/>
+    <!-- Custom build: APK downloaded by the in-app updater, handed to the package installer. -->
+    <cache-path
+        name="updates"
+        path="updates/"/>
 </paths>

@@ -1436,6 +1436,19 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
         )
     }
 
+    // Custom build: self-update from the private GitHub releases (see app/custom/CustomUpdater.kt).
+    val custom = Custom()
+    inner class Custom {
+        val autoCheckUpdates = boolean(
+            key = "custom__auto_check_updates",
+            default = true,
+        )
+        val lastUpdateCheck = long(
+            key = "custom__last_update_check",
+            default = 0L,
+        )
+    }
+
     val internal = Internal()
     inner class Internal {
         val homeIsBetaToolboxCollapsed = boolean(

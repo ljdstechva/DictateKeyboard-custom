@@ -60,6 +60,10 @@ import androidx.compose.ui.unit.dp
 import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.app.LocalNavController
 import dev.patrickgold.florisboard.app.PreferenceRecovery
+import dev.patrickgold.florisboard.app.custom.CustomUpdateState
+import dev.patrickgold.florisboard.app.custom.CustomUpdater
+import dev.patrickgold.florisboard.app.custom.UpdateCheckState
+import androidx.compose.material.icons.outlined.SystemUpdate
 import dev.patrickgold.florisboard.app.Routes
 import dev.patrickgold.florisboard.dictate.data.stats.DictateStats
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
@@ -77,6 +81,8 @@ import java.text.NumberFormat
 import org.florisboard.lib.android.showLongToast
 import org.florisboard.lib.compose.FlorisErrorCard
 import org.florisboard.lib.compose.FlorisIconButton
+import org.florisboard.lib.compose.FlorisInfoCard
+import androidx.compose.runtime.LaunchedEffect
 import org.florisboard.lib.compose.FlorisWarningCard
 import org.florisboard.lib.compose.stringRes
 
@@ -98,6 +104,26 @@ fun HomeScreen() = FlorisScreen {
 
     content {
         val isCollapsed by prefs.internal.homeIsBetaToolboxCollapsed.collectAsState()
+
+        // Custom build: check GitHub for a newer release at most every 6 hours and show a card.
+        if (CustomUpdater.enabled) {
+            val autoCheck by prefs.custom.autoCheckUpdates.collectAsState()
+            val lastCheck by prefs.custom.lastUpdateCheck.collectAsState()
+            LaunchedEffect(autoCheck) {
+                val due = System.currentTimeMillis() - lastCheck > CustomUpdater.AUTO_CHECK_INTERVAL_MS
+                if (autoCheck && due && CustomUpdateState.check !is UpdateCheckState.Checking) {
+                    CustomUpdateState.runCheck { prefs.custom.lastUpdateCheck.set(it) }
+                }
+            }
+            val available = CustomUpdateState.check as? UpdateCheckState.Available
+            if (available != null) {
+                FlorisInfoCard(
+                    text = stringRes(R.string.custom__updates__banner, "tag" to available.release.tag),
+                    modifier = Modifier.padding(8.dp),
+                    onClick = { navController.navigate(Routes.Settings.CustomUpdates) },
+                )
+            }
+        }
 
         val isFlorisBoardEnabled by InputMethodUtils.observeIsFlorisboardEnabled(foregroundOnly = true)
         val isFlorisBoardSelected by InputMethodUtils.observeIsFlorisboardSelected(foregroundOnly = true)
@@ -320,6 +346,17 @@ fun HomeScreen() = FlorisScreen {
             title = stringRes(R.string.about__title),
             onClick = { navController.navigate(Routes.Settings.About) },
         )
+        // Custom build only: hidden in upstream / non-CI builds where no repo is configured.
+        if (CustomUpdater.enabled) {
+            Preference(
+                icon = Icons.Outlined.SystemUpdate,
+                title = stringRes(R.string.custom__updates__title),
+                summary = (CustomUpdateState.check as? UpdateCheckState.Available)?.let {
+                    stringRes(R.string.custom__updates__available, "tag" to it.release.tag)
+                },
+                onClick = { navController.navigate(Routes.Settings.CustomUpdates) },
+            )
+        }
     }
 }
 

@@ -887,6 +887,23 @@
 
     <!-- About UI strings -->
     <string name="about__title" comment="Title of About activity">About</string>
+    <string name="custom__updates__title" comment="Custom build: title of the self-update screen">Updates (custom build)</string>
+    <string name="custom__updates__installed_title" comment="Custom build: group title above the installed version">Installed</string>
+    <string name="custom__updates__built_from" comment="Custom build: which release tag and repository this APK came from">Built from {tag} in {repo}</string>
+    <string name="custom__updates__last_check" comment="Custom build: when the last update check ran">Last checked {when}</string>
+    <string name="custom__updates__no_token" comment="Custom build: shown when the APK carries no GitHub token">This build has no GitHub token, so it cannot read the private repository. Add the UPDATE_TOKEN secret and rebuild.</string>
+    <string name="custom__updates__auto_check__label" comment="Custom build: preference title">Check for updates automatically</string>
+    <string name="custom__updates__auto_check__summary" comment="Custom build: preference summary">Looks for a newer release when you open the settings, at most every 6 hours</string>
+    <string name="custom__updates__check_now" comment="Custom build: button">Check for updates</string>
+    <string name="custom__updates__checking" comment="Custom build: status text">Checking GitHub…</string>
+    <string name="custom__updates__up_to_date" comment="Custom build: status text">You have the latest build.</string>
+    <string name="custom__updates__available" comment="Custom build: a newer release exists">Update available: {tag}</string>
+    <string name="custom__updates__banner" comment="Custom build: card on the settings home">Update {tag} is available. Tap to download and install.</string>
+    <string name="custom__updates__download_install" comment="Custom build: button">Download and install</string>
+    <string name="custom__updates__install" comment="Custom build: button when the APK is already downloaded">Install</string>
+    <string name="custom__updates__ready" comment="Custom build: the APK is downloaded and waiting for the installer">Downloaded. Android will ask you to confirm the install.</string>
+    <string name="custom__updates__cancel" comment="Custom build: button">Cancel</string>
+    <string name="custom__updates__open_release" comment="Custom build: button that opens the GitHub release page">Open on GitHub</string>
     <string name="about__app_icon_content_description" comment="Content description of app icon in About">App icon of {app_name}</string>
     <string name="about__view_licenses" comment="Label of View licenses button in About">Open source licenses</string>
     <string name="about__view_privacy_policy" comment="Label of View privacy policy button in About">Privacy policy</string>

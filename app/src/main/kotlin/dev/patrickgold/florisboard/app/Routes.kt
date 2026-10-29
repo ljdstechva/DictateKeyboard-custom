@@ -53,6 +53,7 @@ import dev.patrickgold.florisboard.app.ext.ExtensionViewScreen
 import dev.patrickgold.florisboard.app.settings.HomeScreen
 import dev.patrickgold.florisboard.app.settings.search.SettingsSearchScreen
 import dev.patrickgold.florisboard.app.settings.about.AboutScreen
+import dev.patrickgold.florisboard.app.custom.CustomUpdateScreen
 import dev.patrickgold.florisboard.app.settings.about.DataAttributionsScreen
 import dev.patrickgold.florisboard.app.settings.about.ProjectLicenseScreen
 import dev.patrickgold.florisboard.app.settings.about.ThirdPartyLicensesScreen
@@ -310,6 +311,10 @@ object Routes {
         object About
 
         @Serializable
+        @Deeplink("settings/custom-updates")
+        object CustomUpdates
+
+        @Serializable
         @Deeplink("settings/about/project-license")
         object ProjectLicense
 
@@ -473,6 +478,7 @@ object Routes {
             composableWithDeepLink(Settings.Restore::class) { RestoreScreen() }
 
             composableWithDeepLink(Settings.About::class) { AboutScreen() }
+            composableWithDeepLink(Settings.CustomUpdates::class) { CustomUpdateScreen() }
             composableWithDeepLink(Settings.ProjectLicense::class) { ProjectLicenseScreen() }
             composableWithDeepLink(Settings.ThirdPartyLicenses::class) { ThirdPartyLicensesScreen() }
             composableWithDeepLink(Settings.DataAttributions::class) { DataAttributionsScreen() }

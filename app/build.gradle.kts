@@ -90,6 +90,10 @@ configure<ApplicationExtension> {
         buildConfigField("String", "BUILD_COMMIT_HASH", "\"${getGitCommitHash().get()}\"")
         buildConfigField("String", "FLADDONS_API_VERSION", "\"v~draft2\"")
         buildConfigField("String", "FLADDONS_STORE_URL", "\"beta.addons.florisboard.org\"")
+        // Custom build: in-app updater (app/custom). CI sets these; blank disables the feature.
+        buildConfigField("String", "CUSTOM_UPDATE_REPO", "\"${System.getenv("CUSTOM_UPDATE_REPO").orEmpty()}\"")
+        buildConfigField("String", "CUSTOM_RELEASE_TAG", "\"${System.getenv("CUSTOM_RELEASE_TAG").orEmpty()}\"")
+        buildConfigField("String", "CUSTOM_UPDATE_TOKEN", "\"${System.getenv("CUSTOM_UPDATE_TOKEN").orEmpty()}\"")
 
         sourceSets {
             maybeCreate("main").apply {

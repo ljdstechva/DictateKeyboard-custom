@@ -64,6 +64,19 @@ jobs:
       - name: Fetch sherpa-onnx native libraries
         run: bash tools/fetch-sherpa-onnx.sh
 
+      # The tag is decided before the build so the APK knows which release it is (the in-app
+      # updater compares it with the newest release on GitHub).
+      - name: Decide release tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          VERSION=$(grep '^projectVersionName=' gradle.properties | cut -d= -f2)
+          TAG="${INPUT_TAG:-v${VERSION}-custom.${{ github.run_number }}}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
       - name: Runner resources
         run: |
           nproc; free -h; df -h / | tail -n1
@@ -73,6 +86,12 @@ jobs:
       # editing gradle.properties, keep the compiler in-process, and skip lintVital (6+ min of
       # release-lint checks that only matter for a Play upload).
       - name: Build benchmark APK
+        env:
+          CUSTOM_UPDATE_REPO: ${{ github.repository }}
+          CUSTOM_RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          # Fine-grained PAT, read-only Contents on this repo only. Baked into the APK so the
+          # app can read the private releases; without it the updater shows a clear error.
+          CUSTOM_UPDATE_TOKEN: ${{ secrets.UPDATE_TOKEN }}
         run: |
           ./gradlew :app:assembleBenchmark --stacktrace --no-daemon \
             -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -XX:+HeapDumpOnOutOfMemoryError" \
@@ -102,8 +121,6 @@ jobs:
           ACTUAL=$("$BT/apksigner" verify --print-certs "$APK" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
           echo "expected cert $EXPECTED / actual cert $ACTUAL"
           [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::APK signed with the wrong key"; exit 1; }
-          VERSION=$(grep '^projectVersionName=' gradle.properties | cut -d= -f2)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -115,20 +132,19 @@ jobs:
       - name: Create GitHub release (pre-release)
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_TAG: ${{ github.event.inputs.release_tag }}
         run: |
           set -euo pipefail
-          TAG="${INPUT_TAG:-v${{ steps.inspect.outputs.version }}-custom.${{ github.run_number }}}"
+          TAG="${{ steps.tag.outputs.tag }}"
           APK="${{ steps.inspect.outputs.apk }}"
           SHA=$(sha256sum "$APK" | cut -d' ' -f1)
           NOTES=$(printf '%s\n' \
-            "Custom build of Dictate Keyboard ${{ steps.inspect.outputs.version }} (commit ${GITHUB_SHA::7})." \
+            "Custom build of Dictate Keyboard ${{ steps.tag.outputs.version }} (commit ${GITHUB_SHA::7})." \
             "" \
             "Package: net.devemperor.dictate.bench (installs alongside the Play Store app)" \
             "Label: Dictate (Custom)" \
             "SHA-256: ${SHA}" \
             "" \
-            "Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); offline translation library not bundled.")
+            "Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); in-app updater under Settings > Updates (custom build); offline translation library not bundled.")
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --clobber
           else
