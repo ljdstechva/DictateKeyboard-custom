@@ -499,16 +499,19 @@ def newest_release_tag():
     return max(tagged)[1], rels[0]["tag_name"]
 
 
-def node_with_text(xml, prefix):
+def node_with_text(xml, prefix, exact=False):
     # Compare with None, never by truth: an ElementTree node without children is falsy.
     for n in nodes(xml):
-        if n.get("text", "").startswith(prefix):
+        text = n.get("text", "")
+        if text == prefix or (not exact and text.startswith(prefix)):
             return n
     return None
 
 
-def text_center(prefix):
-    n = node_with_text(dump_ui(), prefix)
+def text_center(text):
+    # Exact: "Check for updates" is also how the auto-check switch's title starts (run 40922340518
+    # tapped that switch instead of the button).
+    n = node_with_text(dump_ui(), text, exact=True)
     return center(n) if n is not None else None
 
 
