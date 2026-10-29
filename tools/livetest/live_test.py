@@ -209,6 +209,24 @@ def install_model(model_dir):
     log("model files on device: " + sh(f"ls -l {target}").replace("\n", " | "))
 
 
+def enable_keyboard():
+    """Right after install the input method list can lag behind; wait until the system knows the IME."""
+    ime_id = None
+    for _ in range(30):
+        listed = sh("ime list -a -s", check=False)
+        ime_id = next((line.strip() for line in listed.splitlines()
+                       if line.strip().startswith(PKG + "/") and "FlorisImeService" in line), None)
+        if ime_id:
+            break
+        time.sleep(2)
+    (OUT / "ime-list.txt").write_text(sh("ime list -a", check=False))
+    if not ime_id:
+        raise RuntimeError("the keyboard never appeared in `ime list -a`")
+    sh(f"ime enable {ime_id}")
+    sh(f"ime set {ime_id}")
+    log(f"keyboard enabled and selected: {ime_id}")
+
+
 def open_home():
     sh(f"am force-stop {PKG}")
     sh(f"am start -W -n {ACTIVITY}")
@@ -410,8 +428,7 @@ def main():
 
     log("device: " + sh("getprop ro.build.version.release").strip() + " / " + sh("wm size").strip())
     adb("install", "-r", "-g", args.apk, timeout=300)
-    sh(f"ime enable {IME}")
-    sh(f"ime set {IME}")
+    enable_keyboard()
     # First start writes the datastore; then the test settings are put in as root.
     sh(f"am start -W -n {ACTIVITY}")
     time.sleep(6)
