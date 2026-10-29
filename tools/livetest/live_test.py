@@ -421,9 +421,10 @@ def spoken_words(text):
 
 
 def heard_speech(text):
-    # The sentence opens with "Hello", which whisper-tiny got right in every CI run; with at least one more
-    # word of it that cannot come from silence (0 words) or a hallucination loop alone.
-    return "hello" in re.findall(r"[a-z]+", (text or "").lower()) and spoken_words(text) >= 2
+    # Two words of the sentence cannot come from silence (0 words) or a hallucination loop alone.
+    # Not "Hello" in particular: run 40918258149 heard "It is the life that the flying switch, the quick
+    # round of ice jump so perfectly gnar." for it.
+    return spoken_words(text) >= 2
 
 
 def last_request():
@@ -513,7 +514,10 @@ def scenario_updater(mic_cache, wav, stubs):
     log(f"newest release {expected}; GitHub lists {listed_first} first")
     sh(f"am force-stop {PKG}")
     time.sleep(1.5)
-    sh(f"am start -W -a android.intent.action.VIEW -d ui://florisboard/settings/custom-updates -n {ACTIVITY}")
+    # BROWSABLE is what makes the app treat a VIEW intent as a deep link; without it the URI is taken
+    # for an extension file and "Import extension" opens.
+    sh(f"am start -W -a android.intent.action.VIEW -c android.intent.category.BROWSABLE "
+       f"-d ui://florisboard/settings/custom-updates -n {ACTIVITY}")
     time.sleep(4)
     dismiss_system_dialogs()
     button = wait_for(lambda: node_with_text(dump_ui(), "Check for updates"), 30, 1.0)
