@@ -99,13 +99,14 @@ jobs:
           TAG="${INPUT_TAG:-v${{ steps.inspect.outputs.version }}-custom.${{ github.run_number }}}"
           APK="${{ steps.inspect.outputs.apk }}"
           SHA=$(sha256sum "$APK" | cut -d' ' -f1)
-          NOTES="Custom build of Dictate Keyboard ${{ steps.inspect.outputs.version }} (commit ${GITHUB_SHA::7}).
-
-Package: net.devemperor.dictate.bench (installs alongside the Play Store app)
-Label: Dictate (Custom)
-SHA-256: ${SHA}
-
-Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); offline translation library not bundled."
+          NOTES=$(printf '%s\n' \
+            "Custom build of Dictate Keyboard ${{ steps.inspect.outputs.version }} (commit ${GITHUB_SHA::7})." \
+            "" \
+            "Package: net.devemperor.dictate.bench (installs alongside the Play Store app)" \
+            "Label: Dictate (Custom)" \
+            "SHA-256: ${SHA}" \
+            "" \
+            "Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); offline translation library not bundled.")
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --clobber
           else
