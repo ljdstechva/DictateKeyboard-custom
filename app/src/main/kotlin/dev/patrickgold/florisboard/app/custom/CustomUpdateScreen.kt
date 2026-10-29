@@ -140,7 +140,7 @@ fun CustomUpdateScreen() = FlorisScreen {
                     OutlinedButton(
                         enabled = state !is UpdateCheckState.Checking,
                         onClick = {
-                            scope.launch { CustomUpdateState.runCheck { prefs.custom.lastUpdateCheck.set(it) } }
+                            scope.launch { CustomUpdateState.runCheck { this@content.prefs.custom.lastUpdateCheck.set(it) } }
                         },
                     ) { Text(stringRes(R.string.custom__updates__check_now)) }
                 }
