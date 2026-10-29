@@ -5,8 +5,10 @@ Runs on a GitHub-hosted runner next to a booted emulator (see .github/workflows/
 
   * the APK is installed, set as the keyboard and pointed at a mock OpenAI-compatible server on the
     runner (tools/livetest/mock_stt_server.py, reached from the emulator as 10.0.2.2);
-  * speech is a TTS WAV streamed into the emulator microphone over gRPC (tools/inject_emulator_audio.py);
-  * dictation is started and stopped by tapping the keyboard's mic, exactly as a user would.
+  * speech is a TTS WAV played into a PulseAudio null sink whose monitor is the emulator's microphone
+    (emulator started with -allow-host-audio); --audio grpc streams it over gRPC instead;
+  * dictation is started and stopped by tapping the keyboard's mic, exactly as a user would. A tap only
+    counts when the app logs phase=captureStarted / phase=stopTapped.
 
 Scenarios (the mock decides how slow "online" is):
 
@@ -41,8 +43,9 @@ CUSTOM_ID = "custom:livetest"
 MOCK = "http://127.0.0.1:8080"
 ONLINE_TEXT = "Mock online transcript"
 HINT_TEXT = "Try out your setup"
-# Pixel 6 / API 34 positions from upstream's own latency benchmark (tools/benchmark_dictation_latency.ps1).
-FALLBACK_MIC = (1015, 1625)
+# Smartbar mic on the pixel_6 profile (1080x2400): measured from a CI screenshot of this build first,
+# then upstream's own benchmark position (tools/benchmark_dictation_latency.ps1), then a little higher.
+MIC_CANDIDATES = [(1020, 1574), (1015, 1625), (1020, 1545)]
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = Path("livetest-out")
@@ -231,11 +234,24 @@ def enable_keyboard():
 IME_STATE = {}
 
 
+def current_keyboard():
+    return sh("settings get secure default_input_method", check=False).strip()
+
+
 def ensure_keyboard_selected():
-    current = sh("settings get secure default_input_method", check=False).strip()
-    if IME_STATE.get("id") and current != IME_STATE["id"]:
-        log(f"default keyboard was {current!r}, selecting ours again")
-        sh(f"ime set {IME_STATE['id']}", check=False)
+    """Force-stopping the app makes Android fall back to Gboard; select ours again until it sticks."""
+    want = IME_STATE.get("id")
+    if not want:
+        return
+    current = current_keyboard()
+    if current == want:
+        return
+    log(f"default keyboard was {current!r}, selecting ours again")
+    for _ in range(10):
+        sh(f"ime set {want}", check=False)
+        if wait_for(lambda: current_keyboard() == want, 3):
+            return
+    raise RuntimeError(f"could not select the keyboard again (still {current_keyboard()!r})")
 
 
 def dismiss_system_dialogs():
@@ -256,10 +272,12 @@ def dismiss_system_dialogs():
 
 def open_home():
     sh(f"am force-stop {PKG}")
+    time.sleep(1.5)  # the system's own fallback to another keyboard lands shortly after the kill
     ensure_keyboard_selected()
     sh(f"am start -W -n {ACTIVITY}")
     time.sleep(4)
     dismiss_system_dialogs()
+    ensure_keyboard_selected()
 
 
 def focus_field(tag):
@@ -272,48 +290,75 @@ def focus_field(tag):
     if not wait_for(keyboard_shown, 10):
         raise RuntimeError("keyboard did not open on the try-out field")
     time.sleep(2.5)
+    shown = re.search(r"\b(?:mCurMethodId|mSelectedMethodId|mCurId)=(\S+)", sh("dumpsys input_method", check=False))
+    if not shown:
+        log("warning: dumpsys input_method names no current keyboard")
+    elif not shown.group(1).startswith(PKG + "/"):
+        raise RuntimeError(f"the open keyboard is not ours: {shown.group(1)}")
 
 
-def find_mic(tag):
-    """The Dictate mic in the keyboard: an IME node whose label reads like it, else upstream's spot."""
-    xml = dump_ui(f"{tag}-keyboard")
-    ime = [n for n in nodes(xml) if n.get("package") == PKG and "EditText" not in n.get("class", "")]
-    lines = [f"{n.get('class')} desc={n.get('content-desc')!r} text={n.get('text')!r} {n.get('bounds')}"
-             for n in ime]
-    (OUT / f"{tag}-ime-nodes.txt").write_text("\n".join(lines) + "\n")
-    pattern = re.compile(r"dictat|record|microphone|\bmic\b|voice|speak", re.I)
-    for n in ime:
-        label = f"{n.get('content-desc', '')} {n.get('text', '')}"
-        if pattern.search(label) and "stop" not in label.lower():
-            xy = center(n)
-            log(f"mic found by label {label.strip()!r} at {xy}")
+def phase_count(phase):
+    return latency_lines().count(f"phase={phase}")
+
+
+def start_recording(tag, cache):
+    """Tap the smartbar mic; a spot only counts when the app logs that capture started."""
+    candidates = [cache["mic"]] if "mic" in cache else MIC_CANDIDATES
+    for xy in candidates:
+        before = phase_count("captureStarted")
+        tap(xy)
+        if wait_for(lambda: phase_count("captureStarted") > before, 6):
+            if "mic" not in cache:
+                log(f"mic at {xy} started the recording")
+            cache["mic"] = xy
             return xy
-    log(f"mic not labelled in the dump ({len(ime)} keyboard nodes), using {FALLBACK_MIC}")
-    return FALLBACK_MIC
+        screenshot(f"{tag}-mic-miss-{xy[0]}-{xy[1]}")
+        log(f"tap at {xy} did not start a recording")
+    raise RuntimeError("no mic tap started a recording")
 
 
-def record(mic, wav, stubs, tag):
-    """Tap mic, stream the WAV into the emulator microphone, tap mic again. Returns the stop time."""
-    tap(mic)
-    time.sleep(1.0)
-    screenshot(f"{tag}-recording")
+def play_audio(wav, stubs, tag):
+    if AUDIO["mode"] == "pulse":
+        proc = subprocess.run(["paplay", f"--device={AUDIO['sink']}", str(wav)],
+                              capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            raise RuntimeError(f"paplay failed: {proc.stderr.strip()}")
+        return
     sent = OUT / f"{tag}.sent"
     done = OUT / f"{tag}.done"
     proc = subprocess.Popen([sys.executable, str(ROOT / "tools/inject_emulator_audio.py"), str(wav),
                              "--stubs", str(stubs), "--packet-ms", "300",
                              "--sent-marker", str(sent), "--completed-marker", str(done)])
-    if not wait_for(sent.exists, 40, 0.1):
-        proc.kill()
-        raise RuntimeError("audio injection did not finish streaming")
+    try:
+        if not wait_for(sent.exists, 40, 0.1):
+            raise RuntimeError("audio injection did not finish streaming")
+    finally:
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        for marker in (sent, done):
+            marker.unlink(missing_ok=True)
+
+
+AUDIO = {"mode": "pulse", "sink": "virtmic"}
+
+
+def record(cache, wav, stubs, tag):
+    """Start dictation with the mic, play the speech into the microphone, stop with the mic.
+
+    Returns the monotonic time of the stop tap."""
+    mic = start_recording(tag, cache)
+    time.sleep(0.6)
+    screenshot(f"{tag}-recording")
+    play_audio(wav, stubs, tag)
+    time.sleep(0.4)
+    before = phase_count("stopTapped")
     tap(mic)
     stopped = time.monotonic()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    log(f"recording stopped; injection completed={done.exists()}")
-    for marker in (sent, done):
-        marker.unlink(missing_ok=True)
+    if not wait_for(lambda: phase_count("stopTapped") > before, 5, 0.2):
+        raise RuntimeError("the second mic tap did not stop the recording")
+    log("recording stopped")
     return stopped
 
 
@@ -339,10 +384,9 @@ def scenario_online(mic_cache, wav, stubs):
     mock("/control?delay=3&mode=normal")
     open_home()
     focus_field(tag)
-    mic = mic_cache.setdefault("mic", find_mic(tag))
     screenshot(f"{tag}-keyboard")
     logcat_clear()
-    stopped = record(mic, wav, stubs, tag)
+    stopped = record(mic_cache, wav, stubs, tag)
     time.sleep(max(0, 1.2 - (time.monotonic() - stopped)))
     screenshot(f"{tag}-transcribing")
     text = wait_for(lambda: (t := field_text()) and ONLINE_TEXT in t and t, 25, 1.0) or field_text()
@@ -360,9 +404,8 @@ def scenario_no_model(mic_cache, wav, stubs):
     mock("/control?delay=60&mode=normal")
     open_home()
     focus_field(tag)
-    mic = mic_cache.get("mic") or find_mic(tag)
     logcat_clear()
-    stopped = record(mic, wav, stubs, tag)
+    stopped = record(mic_cache, wav, stubs, tag)
     time.sleep(max(0, 4.0 - (time.monotonic() - stopped)))
     screenshot(f"{tag}-transcribing-4s")
     line = wait_for(lambda: offline_switch_line(latency_lines()), 20, 0.5)
@@ -389,9 +432,8 @@ def scenario_network_error(mic_cache, wav, stubs):
     mock("/control?delay=0&mode=reset")
     open_home()
     focus_field(tag)
-    mic = mic_cache.get("mic") or find_mic(tag)
     logcat_clear()
-    record(mic, wav, stubs, tag)
+    record(mic_cache, wav, stubs, tag)
     line = wait_for(lambda: offline_switch_line(latency_lines()), 30, 0.5)
     text = wait_for(lambda: field_text(), 90, 2.0)
     screenshot(f"{tag}-result")
@@ -410,9 +452,8 @@ def scenario_slow_with_model(mic_cache, wav, stubs):
     mock("/control?delay=60&mode=normal")
     open_home()
     focus_field(tag)
-    mic = mic_cache.get("mic") or find_mic(tag)
     logcat_clear()
-    stopped = record(mic, wav, stubs, tag)
+    stopped = record(mic_cache, wav, stubs, tag)
     time.sleep(max(0, 4.0 - (time.monotonic() - stopped)))
     screenshot(f"{tag}-online-4s")
     line = wait_for(lambda: offline_switch_line(latency_lines()), 20, 0.3)
@@ -449,11 +490,15 @@ def main():
     parser.add_argument("--wav", required=True)
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--out", default="livetest-out")
+    parser.add_argument("--audio", choices=["pulse", "grpc"], default="pulse")
+    parser.add_argument("--pulse-sink", default="virtmic")
     args = parser.parse_args()
     OUT = Path(args.out)
     OUT.mkdir(parents=True, exist_ok=True)
+    AUDIO.update(mode=args.audio, sink=args.pulse_sink)
     stubs = OUT.parent / "grpc-stubs"
-    make_stubs(stubs)
+    if args.audio == "grpc":
+        make_stubs(stubs)
 
     log("device: " + sh("getprop ro.build.version.release").strip() + " / " + sh("wm size").strip())
     # Let the freshly booted system settle (the launcher is slow under software rendering).
@@ -487,6 +532,9 @@ def main():
         "dictate__push_to_talk": ("b", "false"),
         "dictate__push_to_talk_default_migrated": ("b", "true"),
         "dictate__offline_switch_seconds": ("i", "10"),
+        # The switch is what is under test, not the silence gate: a quiet CI microphone must not turn
+        # scenarios A and C into "no speech detected".
+        "dictate__skip_silent_recordings": ("b", "false"),
     })
     open_home()
     screenshot("01-home")

@@ -100,6 +100,25 @@ jobs:
             9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6 "$D/vad.onnx" \
             | sha256sum -c -
 
+      - name: Virtual microphone (PulseAudio null sink; the emulator records its monitor)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq pulseaudio pulseaudio-utils
+          pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:"$PWD/livetest/pulse.log"
+          for i in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
+          pactl load-module module-null-sink sink_name=virtmic sink_properties=device.description=LiveTestMic
+          pactl load-module module-null-sink sink_name=speaker sink_properties=device.description=LiveTestSpeaker
+          pactl set-default-sink speaker
+          pactl set-default-source virtmic.monitor
+          SERVER=$(pactl info | sed -n 's/^Server String: //p')
+          echo "PULSE_SERVER=$SERVER" >> "$GITHUB_ENV"
+          pactl info
+          pactl list short sources
+          # Prove the loop on the host: what is played into virtmic must come back out of its monitor.
+          parecord --device=virtmic.monitor --file-format=wav livetest/loopback.wav & REC=$!
+          sleep 0.5; paplay --device=virtmic livetest/speech.wav; sleep 0.5; kill $REC || true
+          sox livetest/loopback.wav -n stat 2>&1 | grep -E 'RMS +amplitude|Length'
+
       - name: Start mock speech-to-text server
         run: |
           nohup python tools/livetest/mock_stt_server.py --port 8080 > livetest/mock.log 2>&1 &
@@ -117,7 +136,7 @@ jobs:
           disk-size: 6000M
           emulator-boot-timeout: 900
           disable-animations: false
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -camera-front none -grpc 8554
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -camera-front none -allow-host-audio -grpc 8554
           script: python tools/livetest/live_test.py --apk "${{ steps.apk.outputs.path }}" --wav livetest/speech.wav --model-dir livetest/model --out livetest/out
 
       - name: Upload results
@@ -128,5 +147,6 @@ jobs:
           path: |
             livetest/out
             livetest/mock.log
+            livetest/pulse.log
             livetest/speech.wav
           retention-days: 7
