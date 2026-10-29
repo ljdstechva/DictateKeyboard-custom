@@ -20,6 +20,7 @@ Scenarios (the mock decides how slow "online" is):
   C  online hangs, no offline model          -> request cancelled at ~10 s, "download an offline model" error
   D  online connection breaks, model present -> offline model takes over at ~10 s (the retries use the wait)
   B  online hangs, offline model present     -> request cancelled at ~10 s, offline model types the text
+  U  Settings > Updates > Check for updates  -> offers the highest release tag on GitHub (not the first listed)
 
 Everything lands in --out: screenshots, logcat per scenario, UI dumps, mock request log, summary.json.
 Exit code 0 only when every scenario passed.
@@ -47,6 +48,8 @@ CUSTOM_ID = "custom:livetest"
 MOCK = "http://127.0.0.1:8080"
 ONLINE_TEXT = "Mock online transcript"
 HINT_TEXT = "Try out your setup"
+REPO = os.environ.get("GITHUB_REPOSITORY", "ljdstechva/DictateKeyboard-custom")
+RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)-custom\.(\d+)")
 # Smartbar mic on the pixel_6 profile (1080x2400): measured from a CI screenshot of this build first,
 # then upstream's own benchmark position (tools/benchmark_dictation_latency.ps1), then a little higher.
 MIC_CANDIDATES = [(1020, 1574), (1015, 1625), (1020, 1545)]
@@ -418,9 +421,10 @@ def spoken_words(text):
 
 
 def heard_speech(text):
-    # The sentence opens with "Hello", which whisper-tiny got right in every CI run; with at least one more
-    # word of it that cannot come from silence (0 words) or a hallucination loop alone.
-    return "hello" in re.findall(r"[a-z]+", (text or "").lower()) and spoken_words(text) >= 2
+    # Two words of the sentence cannot come from silence (0 words) or a hallucination loop alone.
+    # Not "Hello" in particular: run 40918258149 heard "It is the life that the flying switch, the quick
+    # round of ice jump so perfectly gnar." for it.
+    return spoken_words(text) >= 2
 
 
 def last_request():
@@ -479,6 +483,73 @@ def scenario_hold_backspace(mic_cache, wav, stubs):
         check(tag, f"hold {hold} deletes whole words", ends_on_word(before, after) and gone >= 1 and after.strip(),
               f"{before!r} -> {after!r} ({gone} words)")
     logcat_save(tag)
+
+
+def newest_release_tag():
+    """(highest release tag by number, the tag GitHub lists first) for releases carrying an APK."""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "dictate-livetest"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases?per_page=100", headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        rels = [r for r in json.load(resp)
+                if not r["draft"] and any(a["name"].endswith(".apk") for a in r["assets"])]
+    tagged = [(tuple(map(int, m.groups())), r["tag_name"]) for r in rels
+              if (m := RELEASE_TAG.fullmatch(r["tag_name"]))]
+    return max(tagged)[1], rels[0]["tag_name"]
+
+
+def node_with_text(xml, prefix, exact=False):
+    # Compare with None, never by truth: an ElementTree node without children is falsy.
+    for n in nodes(xml):
+        text = n.get("text", "")
+        if text == prefix or (not exact and text.startswith(prefix)):
+            return n
+    return None
+
+
+def text_center(text):
+    # Exact: "Check for updates" is also how the auto-check switch's title starts (run 40922340518
+    # tapped that switch instead of the button).
+    n = node_with_text(dump_ui(), text, exact=True)
+    return center(n) if n is not None else None
+
+
+def scenario_updater(mic_cache, wav, stubs):
+    """The test build's tag (livetest-N) is not a release tag, so the updater offers whatever it
+    takes for the newest release: that has to be the highest number, not the first in GitHub's list."""
+    tag = "U-updater"
+    expected, listed_first = newest_release_tag()
+    log(f"newest release {expected}; GitHub lists {listed_first} first")
+    sh(f"am force-stop {PKG}")
+    time.sleep(1.5)
+    # BROWSABLE is what makes the app treat a VIEW intent as a deep link; without it the URI is taken
+    # for an extension file and "Import extension" opens.
+    sh(f"am start -W -a android.intent.action.VIEW -c android.intent.category.BROWSABLE "
+       f"-d ui://florisboard/settings/custom-updates -n {ACTIVITY}")
+    time.sleep(4)
+    dismiss_system_dialogs()
+    # Wait until the button is enabled again: opening the screen starts a check of its own.
+    time.sleep(3)
+    button = wait_for(lambda: text_center("Check for updates"), 30, 1.0)
+    if button is None:
+        screenshot(f"{tag}-no-button")
+        raise RuntimeError("Updates screen not shown")
+    tap(button)
+    xml = ""
+
+    def offered():
+        nonlocal xml
+        xml = dump_ui()
+        n = node_with_text(xml, "Update available:")
+        return n.get("text") if n is not None else None
+
+    shown = wait_for(offered, 40, 2.0)
+    screenshot(f"{tag}-result")
+    (OUT / f"{tag}-result.xml").write_text(xml)
+    status = [n.get("text") for n in nodes(xml) if n.get("package") == PKG and n.get("text")]
+    check(tag, "offers the highest release tag", shown == f"Update available: {expected}",
+          f"{shown!r}; newest {expected}, listed first {listed_first}" + ("" if shown else f"; screen {status}"))
 
 
 def scenario_no_model(mic_cache, wav, stubs):
@@ -625,7 +696,7 @@ def main():
 
     mic_cache = {}
     steps = [("A", scenario_online), ("E", scenario_hold_backspace), ("C", scenario_no_model), ("install-model", None),
-             ("D", scenario_network_error), ("B", scenario_slow_with_model)]
+             ("D", scenario_network_error), ("B", scenario_slow_with_model), ("U", scenario_updater)]
     for name, fn in steps:
         try:
             if fn is None:

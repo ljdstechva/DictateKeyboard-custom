@@ -64,6 +64,11 @@ object CustomUpdateState {
                 CustomUpdater.isNewer(latest) -> UpdateCheckState.Available(latest)
                 else -> UpdateCheckState.UpToDate
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Leaving the screen mid-check (or the activity being recreated by a deep link) is not a
+            // failed check: it used to stay on screen as "The coroutine scope left the composition".
+            check = UpdateCheckState.Idle
+            throw e
         } catch (e: Exception) {
             UpdateCheckState.Failed(e.message ?: e.javaClass.simpleName)
         }
