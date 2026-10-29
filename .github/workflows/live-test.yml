@@ -105,7 +105,8 @@ jobs:
       - name: Virtual microphone (PulseAudio null sink; the emulator records its monitor)
         run: |
           set -euo pipefail
-          sudo apt-get install -y -qq pulseaudio pulseaudio-utils
+          # libpulse-dev: the unversioned libpulse.so, in case the emulator dlopens that name.
+          sudo apt-get install -y -qq pulseaudio pulseaudio-utils libpulse-dev
           pulseaudio --daemonize=yes --exit-idle-time=-1 --log-level=info --log-time=yes \
             --log-target=file:"$PWD/livetest/pulse.log"
           for i in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
@@ -128,6 +129,13 @@ jobs:
           pactl info | grep -E 'Server String|Default S'
           pactl list short sources
           ls "$ANDROID_HOME/emulator/lib64" 2>/dev/null | grep -i -E 'pulse|audio' || echo "no bundled pulse libs"
+          echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"; ls -la "${XDG_RUNTIME_DIR:-/nonexistent}/pulse" || true
+          # What the emulator's audio code looks for (library names, env vars, files).
+          for B in "$ANDROID_HOME"/emulator/qemu/linux-x86_64/qemu-system-x86_64 "$ANDROID_HOME"/emulator/lib64/libandroid-emu*.so; do
+            [ -f "$B" ] || continue
+            echo "== $B"; ldd "$B" 2>/dev/null | grep -i pulse || true
+            strings -n 6 "$B" | grep -i -E 'libpulse|QEMU_PA|QEMU_AUDIO|pulse/(pid|native)|XDG_RUNTIME|allow-host-audio|init .* audio driver' | sort -u | head -20
+          done
           # Prove the loop on the host: what is played into virtmic must come back out of its monitor.
           parecord --device=virtmic.monitor --file-format=wav livetest/loopback.wav & REC=$!
           sleep 0.5; paplay --device=virtmic livetest/speech.wav; sleep 0.5; kill $REC || true
