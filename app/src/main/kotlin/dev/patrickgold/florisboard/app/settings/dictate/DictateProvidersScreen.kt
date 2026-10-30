@@ -209,8 +209,9 @@ fun DictateProvidersScreen() = FlorisScreen {
             TranscriptionProviderPreference(
                 entries = ProviderListing.transcriptionChoices(accounts, activeTranscriptionId, isInstalled),
             )
-            // Custom build: offline switch. After this many seconds of online transcribing the downloaded
-            // on-device model takes over; with none downloaded, the error says to download one. 0 = off.
+            // Custom build: offline switch. When the provider cannot be reached within this many seconds
+            // (no internet), the downloaded on-device model takes over; with none downloaded, the error
+            // says to download one. 0 = off.
             DialogSliderPreference(
                 pref = prefs.dictate.offlineSwitchSeconds,
                 icon = Icons.Default.CloudOff,

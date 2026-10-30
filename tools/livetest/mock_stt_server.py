@@ -7,11 +7,14 @@ The emulator reaches it at http://10.0.2.2:<port>/v1. No real provider, key or a
   POST .../chat/completions      -> echoes the last user message (in case rewording runs)
   GET  .../models                -> one model
   GET  /control?delay=<seconds>  -> sets the delay for the following transcription requests
+  HEAD .../                      -> 200 (the app's reachability probe; counted in /probes)
   GET  /control?mode=reset       -> drops every transcription connection without a reply (network error)
+  GET  /control?mode=blackhole   -> probes and transcriptions get no answer at all (connected, no internet)
   GET  /requests                 -> JSON log of the transcription requests seen so far
+  GET  /probes                   -> {"answered": n, "unanswered": n} probes since the last /control
 
 Each request is logged with its outcome: "answered" after the delay, or "client-closed" when the app
-cancelled the call (that is what the offline switch must do at its deadline).
+cancelled the call (that is what the offline switch must do when the provider cannot be reached).
 """
 
 import argparse
@@ -25,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 ONLINE_TEXT = "Mock online transcript from the test server."
 
-state = {"delay": 0.0, "mode": "normal", "requests": []}
+state = {"delay": 0.0, "mode": "normal", "requests": [], "probes": {"answered": 0, "unanswered": 0}}
 lock = threading.Lock()
 
 
@@ -77,16 +80,41 @@ class Handler(BaseHTTPRequestHandler):
                     state["delay"] = float(q["delay"][0])
                 if "mode" in q:
                     state["mode"] = q["mode"][0]
+                state["probes"] = {"answered": 0, "unanswered": 0}
                 self._json(200, {"delay": state["delay"], "mode": state["mode"]})
             return
         if url.path == "/requests":
             with lock:
                 self._json(200, state["requests"])
             return
+        if url.path == "/probes":
+            with lock:
+                self._json(200, state["probes"])
+            return
         if url.path.endswith("/models"):
             self._json(200, {"object": "list", "data": [{"id": "whisper-1", "object": "model"}]})
             return
         self._json(404, {"error": {"message": "not found"}})
+
+    def _hold_until_closed(self, limit=180):
+        """No answer at all, as behind a network that is up but reaches nothing, until the app gives up."""
+        started = time.monotonic()
+        while time.monotonic() - started < limit and not self._client_closed():
+            time.sleep(0.05)
+        self.close_connection = True
+        return round(time.monotonic() - started, 2)
+
+    def do_HEAD(self):  # noqa: N802
+        if state["mode"] == "blackhole":
+            with lock:
+                state["probes"]["unanswered"] += 1
+            print(f"[mock] probe held without answer, app gave up after {self._hold_until_closed()} s", flush=True)
+            return
+        with lock:
+            state["probes"]["answered"] += 1
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self):  # noqa: N802
         url = urlparse(self.path)
@@ -97,6 +125,12 @@ class Handler(BaseHTTPRequestHandler):
                 entry = {"path": url.path, "bytes": len(body), "delay": delay,
                          "received": time.time(), "outcome": "pending"}
                 state["requests"].append(entry)
+            if state["mode"] == "blackhole":
+                entry["afterSeconds"] = self._hold_until_closed()
+                entry["outcome"] = "client-closed"
+                print(f"[mock] transcription held (mode=blackhole), app gave up after {entry['afterSeconds']} s",
+                      flush=True)
+                return
             if state["mode"] == "reset":
                 # A broken connection: the request is read, then the socket is dropped without a reply.
                 entry["outcome"] = "reset"

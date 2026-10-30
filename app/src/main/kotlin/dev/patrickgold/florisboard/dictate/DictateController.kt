@@ -22,6 +22,7 @@ import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
@@ -93,6 +94,9 @@ import org.florisboard.lib.kotlin.curlyFormat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -2150,9 +2154,10 @@ object DictateController {
                         tighteningSymbols = appContext.transcriptTighteningSymbols(),
                     ).transcribe(request)
                 } else {
-                    // Custom build, offline switch: the provider gets what is left of the
-                    // offlineSwitchSeconds budget, counted from the moment "Transcribing" appeared. Past it
-                    // the coroutine is cancelled, which cancels the OkHttp call, and the recording goes to a
+                    // Custom build, offline switch: a no-internet check, not a time limit. The provider has
+                    // offlineSwitchSeconds to show it can be reached at all (see [withOfflineSwitch]); after
+                    // that the call takes as long as it needs. Unreachable, or no network on the phone: the
+                    // call is cancelled, which cancels the OkHttp call, and the recording goes to a
                     // downloaded on-device model below - or fails with "download an offline model".
                     val switchBudgetMs = offlineSwitchBudgetMillis(source, isReplay || resend)
                     val cloudCall: suspend () -> TranscriptionResult = {
@@ -2195,19 +2200,20 @@ object DictateController {
                         if (switchBudgetMs == null) {
                             cloudCall()
                         } else {
-                            withTimeoutOrNull(switchBudgetMs) { cloudCall() }
-                                ?: throw offlineSwitchTimeout(preset)
+                            withOfflineSwitch(
+                                appContext, switchBudgetMs, preset, probeClientFor(preset, apiKey, account), cloudCall,
+                            )
                         }
                     } catch (e: DictateApiException) {
                         // Offline fallback (#104): the cloud call failed because we're offline (after its
                         // retries) or ran past the offline switch - transcribe on-device with the
                         // downloaded model instead of erroring.
                         val fallback = localFallbackProvider(appContext, preset, e)
-                        if (e.code == OFFLINE_SWITCH_CODE || fallback != null) {
+                        if (e.isOfflineSwitch || fallback != null) {
                             Log.i(
                                 LATENCY_LOG_TAG,
                                 "flow=${latencyTrace.id} phase=offlineSwitch reason=" +
-                                    (if (e.code == OFFLINE_SWITCH_CODE) "deadline" else e.kind.name) +
+                                    (if (e.isOfflineSwitch) e.offlineSwitchReason else e.kind.name) +
                                     " sinceTranscribingMs=${transcribingElapsedMillis()}" +
                                     " model=${offlineFallbackModel(appContext) ?: "none"}" +
                                     " used=${fallback != null}",
@@ -3314,7 +3320,7 @@ object DictateController {
                         }
                     }
                 }
-                // Custom build, offline switch: a segment only gets the short budget when there is a
+                // Custom build, offline switch: a segment only gets the no-internet check when there is a
                 // downloaded model to hand it to. Without one a cut-off segment would leave a gap in the
                 // text, so it keeps the full request timeout instead.
                 val switchSeconds = prefs.dictate.offlineSwitchSeconds.get()
@@ -3327,11 +3333,17 @@ object DictateController {
                     if (segmentBudgetMs == null) {
                         segmentCall()
                     } else {
-                        withTimeoutOrNull(segmentBudgetMs) { segmentCall() } ?: throw offlineSwitchTimeout(preset)
+                        withOfflineSwitch(
+                            appContext, segmentBudgetMs, preset, probeClientFor(preset, apiKey, account), segmentCall,
+                        )
                     }
                 } catch (e: DictateApiException) {
                     val fallback = localFallbackProvider(appContext, preset, e) ?: throw e
-                    Log.i(LATENCY_LOG_TAG, "phase=segmentOfflineSwitch reason=${e.code ?: e.kind.name}")
+                    Log.i(
+                        LATENCY_LOG_TAG,
+                        "phase=segmentOfflineSwitch reason=" +
+                            (if (e.isOfflineSwitch) e.offlineSwitchReason else e.kind.name),
+                    )
                     // On-device gets the segment as recorded, never the sped-up copy (#272).
                     fallback.transcribe(if (spedUp != null) request.copy(audioFile = wav) else request)
                 }
@@ -5136,8 +5148,22 @@ object DictateController {
 
     // --- Custom build: offline switch ------------------------------------------------------------
 
-    /** Marks the [DictateApiException] thrown when the offline switch stopped waiting for the provider. */
-    private const val OFFLINE_SWITCH_CODE = "custom_offline_switch"
+    /** Marks the [DictateApiException] thrown when the provider could not be reached in time. */
+    private const val OFFLINE_SWITCH_NO_INTERNET = "custom_offline_switch_no_internet"
+
+    /** Marks the [DictateApiException] thrown when the phone had no network at all. */
+    private const val OFFLINE_SWITCH_NO_NETWORK = "custom_offline_switch_no_network"
+
+    /** Between two reachability probes when the network refused the last one outright. */
+    private const val OFFLINE_PROBE_RETRY_MS = 500L
+
+    /** Whether this error is the offline switch handing over, rather than the provider failing. */
+    private val DictateApiException.isOfflineSwitch: Boolean
+        get() = code == OFFLINE_SWITCH_NO_INTERNET || code == OFFLINE_SWITCH_NO_NETWORK
+
+    /** The reason the latency log gives for an [isOfflineSwitch] error. */
+    private val DictateApiException.offlineSwitchReason: String
+        get() = if (code == OFFLINE_SWITCH_NO_NETWORK) "noNetwork" else "noInternet"
 
     /** The offline fallback runs when its own toggle is on, or when the offline switch is (custom build). */
     private fun offlineFallbackArmed(): Boolean =
@@ -5160,22 +5186,100 @@ object DictateController {
         (_state.value as? UiState.Transcribing)?.let { SystemClock.elapsedRealtime() - it.startedAtMs } ?: 0L
 
     /**
-     * How long the cloud call may still take before the offline switch takes over, or null for no limit.
-     * Off for a picked file (long by nature, and it has a cancel button) and for a deliberate resend,
-     * which is the user choosing to wait for the provider after all.
+     * How long the provider has to show it can be reached before the offline switch takes over, or null
+     * for no switch. Off for a picked file (long by nature, and it has a cancel button) and for a
+     * deliberate resend, which is the user choosing to wait for the provider after all.
      */
     private fun offlineSwitchBudgetMillis(source: String, isReplay: Boolean): Long? {
         val seconds = prefs.dictate.offlineSwitchSeconds.get()
         if (seconds <= 0 || isReplay || source == DictateHistorySource.IMPORT) return null
-        return (seconds * 1000L - transcribingElapsedMillis()).coerceAtLeast(0L)
+        return seconds * 1000L
     }
 
-    private fun offlineSwitchTimeout(preset: ProviderPreset): DictateApiException {
-        val seconds = prefs.dictate.offlineSwitchSeconds.get()
-        return DictateApiException(
-            DictateApiException.Kind.TIMEOUT,
-            "${preset.displayName} did not answer within $seconds s, so the offline switch stopped waiting.",
-            code = OFFLINE_SWITCH_CODE,
-        )
+    /**
+     * Custom build, offline switch: runs the cloud [call] while asking, alongside it, whether the provider
+     * can be reached at all ([OpenAiCompatibleClient.isReachable], asked again every
+     * [OFFLINE_PROBE_RETRY_MS] while the network refuses outright). Once the provider has answered, or
+     * [call] is done, the call has all the time its request timeout gives it: the internet works, so the
+     * online text is worth the wait, however long the recording or the upload. When neither has happened
+     * within [budgetMs], or the phone has no network at all (which needs no waiting), [call] is cancelled
+     * and an [isOfflineSwitch] error hands the recording to the offline model.
+     *
+     * This replaced a deadline on the whole call, which also cut off long recordings, slow uploads and a
+     * busy provider on a working connection and sent them to the offline model.
+     */
+    private suspend fun <T> withOfflineSwitch(
+        context: Context,
+        budgetMs: Long,
+        preset: ProviderPreset,
+        probeClient: OpenAiCompatibleClient,
+        call: suspend () -> T,
+    ): T {
+        if (!probeClient.targetsThisDevice && !hasNetwork(context)) {
+            throw offlineSwitchError(preset, OFFLINE_SWITCH_NO_NETWORK)
+        }
+        return coroutineScope {
+            val work = async { call() }
+            val probing = async {
+                val until = SystemClock.elapsedRealtime() + budgetMs
+                var left = budgetMs
+                while (left > 0) {
+                    when (probeClient.isReachable(left)) {
+                        // Null: no address to ask, so no verdict on the network. The call decides.
+                        true, null -> return@async true
+                        false -> delay(minOf(OFFLINE_PROBE_RETRY_MS, until - SystemClock.elapsedRealtime()))
+                    }
+                    left = until - SystemClock.elapsedRealtime()
+                }
+                false
+            }
+            val reached = select<Boolean> {
+                work.onJoin { true }
+                probing.onAwait { it }
+            }
+            probing.cancel()
+            if (!reached) {
+                work.cancel()
+                throw offlineSwitchError(preset, OFFLINE_SWITCH_NO_INTERNET)
+            }
+            work.await()
+        }
     }
+
+    /** The client [withOfflineSwitch] probes with: the provider's address, proxy and certificate trust. */
+    private fun probeClientFor(preset: ProviderPreset, apiKey: String, account: ProviderAccount) =
+        OpenAiCompatibleClient.from(
+            preset, apiKey,
+            baseUrlOverride = baseUrlOverrideFor(account),
+            proxy = prefs.dictate.dictateProxyConfig(),
+            trustUserCerts = account.trustUserCerts,
+            timeoutSeconds = prefs.dictate.requestTimeout.get().toLong(),
+        )
+
+    /**
+     * Whether the phone has a network to send anything over. The system knows at once, so with mobile
+     * data and Wi-Fi off, or in flight mode, the switch need not wait for a probe to fail. Fails open:
+     * without an answer from the system, the probe decides.
+     */
+    private fun hasNetwork(context: Context): Boolean {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return true
+        return runCatching { connectivity.activeNetwork != null }.getOrDefault(true)
+    }
+
+    private fun offlineSwitchError(preset: ProviderPreset, code: String): DictateApiException =
+        if (code == OFFLINE_SWITCH_NO_NETWORK) {
+            DictateApiException(
+                DictateApiException.Kind.NETWORK,
+                "This phone has no network connection, so ${preset.displayName} was not asked.",
+                code = code,
+            )
+        } else {
+            DictateApiException(
+                DictateApiException.Kind.TIMEOUT,
+                "${preset.displayName} could not be reached within " +
+                    "${prefs.dictate.offlineSwitchSeconds.get()} s (no internet), so the offline switch " +
+                    "stopped waiting.",
+                code = code,
+            )
+        }
 }

@@ -1,7 +1,8 @@
 # Live test of the custom build on an Android emulator (GitHub-hosted runner with KVM).
 # Builds the APK with build.yml (no release), then dictates through the real keyboard against a mock
-# OpenAI-compatible server: online fast, online hanging with and without an offline model, and a
-# broken connection. See tools/livetest/live_test.py. Nothing here publishes a release.
+# OpenAI-compatible server: online fast, online slow but reachable, no internet with and without an
+# offline model, a broken connection and flight mode. See tools/livetest/live_test.py. Nothing here
+# publishes a release.
 name: Live test (emulator)
 
 on:

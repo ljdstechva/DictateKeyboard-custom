@@ -325,13 +325,15 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
             default = false,
         )
 
-        // Custom build: offline switch. When the cloud provider has not answered within this many
-        // seconds (counted from the moment "Transcribing" appears), the request is aborted and the
-        // recording goes to a downloaded on-device model instead. No model downloaded -> an error that
-        // suggests downloading one; the recording is kept for resend. 0 turns the switch off.
+        // Custom build: offline switch, a no-internet check. When the cloud provider cannot be reached
+        // within this many seconds (no answer to a reachability probe), or the phone has no network at
+        // all, the request is aborted and the recording goes to a downloaded on-device model instead.
+        // A provider that can be reached is waited for, however long it takes. No model downloaded -> an
+        // error that suggests downloading one; the recording is kept for resend. 0 turns the switch off.
+        // New key since the meaning changed (it was a 10 s limit on the whole online call).
         val offlineSwitchSeconds = int(
-            key = "dictate__offline_switch_seconds",
-            default = 10,
+            key = "dictate__offline_switch_no_internet_seconds",
+            default = 5,
         )
 
         // Wear OS standalone (#106): when on, the paired watch is allowed to transcribe by itself and
