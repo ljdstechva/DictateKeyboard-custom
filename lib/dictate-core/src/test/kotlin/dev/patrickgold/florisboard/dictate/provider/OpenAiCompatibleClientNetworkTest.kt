@@ -43,6 +43,42 @@ class OpenAiCompatibleClientNetworkTest : FunSpec({
         client.writeTimeoutMillis shouldBe 120_000
     }
 
+    test("custom offline switch: any HTTP answer to the probe counts as reachable, without the key") {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(401))
+            val client = OpenAiCompatibleClient(
+                ProviderConfig(baseUrl = server.url("/v1").toString(), apiKey = "secret-key"),
+            )
+
+            client.isReachable(5_000) shouldBe true
+            val recorded = server.takeRequest()
+            recorded.method shouldBe "HEAD"
+            recorded.path shouldBe "/v1/"
+            recorded.getHeader("Authorization") shouldBe null
+        }
+    }
+
+    test("custom offline switch: a server that never answers is unreachable within the budget") {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            val client = OpenAiCompatibleClient(
+                ProviderConfig(baseUrl = server.url("/v1/").toString(), apiKey = "test"),
+            )
+
+            val started = System.nanoTime()
+            client.isReachable(1_000) shouldBe false
+            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started).toInt() shouldBeLessThan 3_000
+        }
+    }
+
+    test("custom offline switch: no address to ask is no verdict, and loopback needs no network") {
+        OpenAiCompatibleClient(ProviderConfig(baseUrl = "", apiKey = "test")).isReachable(1_000) shouldBe null
+        OpenAiCompatibleClient(ProviderConfig(baseUrl = "http://localhost:11434/v1/", apiKey = ""))
+            .targetsThisDevice shouldBe true
+        OpenAiCompatibleClient(ProviderConfig(baseUrl = "https://api.openai.com/v1/", apiKey = ""))
+            .targetsThisDevice shouldBe false
+    }
+
     test("OpenRouter streams an OpenAI-compatible multipart upload") {
         ProviderRegistry.OPENROUTER.transcriptionApi shouldBe TranscriptionApi.OPENROUTER_MULTIPART
 

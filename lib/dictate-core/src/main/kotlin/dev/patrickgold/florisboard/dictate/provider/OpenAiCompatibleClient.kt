@@ -27,8 +27,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.Credentials
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -239,6 +241,43 @@ class OpenAiCompatibleClient(
 
     override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult =
         transcribe(request, onRetry = {})
+
+    /**
+     * Custom build, offline switch: whether the provider's server answers at all right now. One HEAD
+     * request to the base URL, without the key, on a connection of its own: a pooled connection that
+     * died while idle cannot fake an outage, and an upload already filling the line cannot hold the
+     * question up. Any HTTP status counts (a 401 or 404 is still the server answering); only a transport
+     * failure or no answer within [timeoutMillis] is false. Null when the base URL is no address to ask,
+     * which says nothing about the network.
+     */
+    suspend fun isReachable(timeoutMillis: Long): Boolean? {
+        val url = probeUrl ?: return null
+        val probeClient = client.newBuilder()
+            .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
+            .callTimeout(Duration.ofMillis(timeoutMillis.coerceAtLeast(1L)))
+            .build()
+        return suspendCancellableCoroutine { cont ->
+            val call = probeClient.newCall(Request.Builder().url(url).head().build())
+            cont.invokeOnCancellation { runCatching { call.cancel() } }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) cont.resume(false)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.close()
+                    if (cont.isActive) cont.resume(true)
+                }
+            })
+        }
+    }
+
+    /** Custom build: the base URL is on this phone itself (a local server), which needs no network. */
+    val targetsThisDevice: Boolean
+        get() = probeUrl?.host?.let { it == "localhost" || it.startsWith("127.") || it == "::1" } == true
+
+    private val probeUrl
+        get() = config.normalizedBaseUrl.toHttpUrlOrNull()
 
     /**
      * The audio itself as a request body, counting its bytes on the way out when the caller asked for
@@ -1405,6 +1444,11 @@ class OpenAiCompatibleClient(
             // Connection establishment needs a short budget per route. Uploading a long recording and
             // waiting for the model keep the full configured call/read/write timeout below.
             .connectTimeout(NETWORK_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            // Custom build: an idle connection is closed after a minute instead of five. A mobile
+            // network can drop one silently while it sits in the pool, and a dictation sent into it
+            // waits out the whole read timeout - the offline switch no longer cuts that short once the
+            // provider has answered its reachability probe on a fresh connection.
+            .connectionPool(ConnectionPool(5, 1, TimeUnit.MINUTES))
             // OkHttp 5 Happy Eyeballs races IPv6/IPv4 routes 250 ms apart and keeps the first winner.
             .fastFallback(true)
             .readTimeout(timeout)

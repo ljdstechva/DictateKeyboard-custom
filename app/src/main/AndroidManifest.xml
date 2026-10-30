@@ -5,6 +5,8 @@
     <!-- Permission needed to vibrate if the user has key press vibration enabled -->
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Custom build: the offline switch asks whether the phone has a network at all. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <!-- Buying credit packs for Dictate Cloud. The billing library declares this itself, but
          stating it here keeps it visible: without it in the uploaded build, the Play Console
          will not let in-app products be created at all. -->

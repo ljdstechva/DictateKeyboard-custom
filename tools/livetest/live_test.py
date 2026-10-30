@@ -15,12 +15,14 @@ Runs on a GitHub-hosted runner next to a booted emulator (see .github/workflows/
 
 Scenarios (the mock decides how slow "online" is):
 
-  A  online answers after 3 s                -> online text is typed, no offline switch
+  A  online answers after 3 s                -> online text is typed, no offline switch, probe answered
   E  Backspace on A's text: tap, then hold   -> a tap deletes one character, a hold deletes whole words
-  C  online hangs, no offline model          -> request cancelled at ~10 s, "download an offline model" error
-  D  online connection breaks, model present -> offline model takes over at ~10 s (the retries use the wait)
-  B  online hangs, offline model present     -> request cancelled at ~10 s, offline model types the text
+  C  no internet (nothing answers), no model -> request cancelled at ~5 s, "download an offline model" error
+  D  server reachable, uploads dropped       -> offline model takes over after the call's retries (~10 s)
+  B  online answers after 12 s, model ready  -> no switch: the provider is reachable, its text is typed
+  F  no internet (nothing answers), model    -> request cancelled at ~5 s, offline model types the text
   U  Settings > Updates > Check for updates  -> offers the highest release tag on GitHub (not the first listed)
+  G  flight mode, model present              -> offline model at once (no network), no 5 s wait
 
 Everything lands in --out: screenshots, logcat per scenario, UI dumps, mock request log, summary.json.
 Exit code 0 only when every scenario passed.
@@ -452,6 +454,8 @@ def scenario_online(mic_cache, wav, stubs):
     check(tag, "no offline switch", "phase=offlineSwitch" not in lat)
     req = last_request()
     check(tag, "mock answered", req.get("outcome") == "answered", json.dumps(req))
+    probes = mock("/probes")
+    check(tag, "reachability probe answered", probes.get("answered", 0) >= 1, json.dumps(probes))
 
 
 def ends_on_word(before, after):
@@ -553,14 +557,14 @@ def scenario_updater(mic_cache, wav, stubs):
 
 
 def scenario_no_model(mic_cache, wav, stubs):
-    tag = "C-slow-no-model"
-    mock("/control?delay=60&mode=normal")
+    tag = "C-no-internet-no-model"
+    mock("/control?delay=0&mode=blackhole")
     open_home()
     focus_field(tag)
     logcat_clear()
     stopped = record(mic_cache, wav, stubs, tag, speech=False)
-    time.sleep(max(0, 4.0 - (time.monotonic() - stopped)))
-    screenshot(f"{tag}-transcribing-4s")
+    time.sleep(max(0, 3.0 - (time.monotonic() - stopped)))
+    screenshot(f"{tag}-transcribing-3s")
     line = wait_for(lambda: offline_switch_line(latency_lines()), 20, 0.5)
     time.sleep(1.5)
     screenshot(f"{tag}-error")
@@ -568,16 +572,17 @@ def scenario_no_model(mic_cache, wav, stubs):
     lat = latency_lines()
     logcat_save(tag)
     text = field_text()
-    check(tag, "offline switch fired on the deadline", line and line[0] == "deadline", repr(line))
+    check(tag, "offline switch fired: no internet", line and line[0] == "noInternet", repr(line))
     if line:
         ms = int(line[1])
-        check(tag, "switch at ~10 s of transcribing", 9000 <= ms <= 12500, f"{ms} ms")
+        check(tag, "switch at ~5 s", 4500 <= ms <= 7500, f"{ms} ms")
         check(tag, "no model reported", line[2] == "none" and line[3] == "false", repr(line))
     check(tag, "error shown (apiError TIMEOUT)", re.search(r"phase=apiError kind=TIMEOUT", lat), "")
     check(tag, "field stays empty", not text, repr(text))
     req = last_request()
     check(tag, "online request cancelled by the app", req.get("outcome") == "client-closed" and
-          req.get("afterSeconds", 99) <= 12.5, json.dumps(req))
+          req.get("afterSeconds", 99) <= 7.5, json.dumps(req))
+    mock("/control?mode=normal")
 
 
 def scenario_network_error(mic_cache, wav, stubs):
@@ -591,41 +596,91 @@ def scenario_network_error(mic_cache, wav, stubs):
     text = wait_for(lambda: field_text(), 90, 2.0)
     screenshot(f"{tag}-result")
     logcat_save(tag)
-    # Three retries 3 s apart come close to the 10 s budget, so either trigger is a correct handover.
+    # The server is reachable (the probe is answered) but drops every upload: no-internet does not
+    # apply, the call's own network error after its retries (3 s apart) hands over.
     check(tag, "offline model used after a network error",
-          line and line[0] in ("NETWORK", "deadline") and line[3] == "true", repr(line))
+          line and line[0] == "NETWORK" and line[3] == "true", repr(line))
     if line:
-        check(tag, "handover within ~10 s", int(line[1]) <= 12500, f"{line[1]} ms")
+        check(tag, "handover within ~13 s", int(line[1]) <= 13000, f"{line[1]} ms")
     check(tag, "offline text typed", text and ONLINE_TEXT not in text, repr(text))
     check(tag, "offline text is the spoken sentence", heard_speech(text), f"{spoken_words(text)} words")
     mock("/control?mode=normal")
 
 
 def scenario_slow_with_model(mic_cache, wav, stubs):
-    tag = "B-slow-with-model"
-    mock("/control?delay=60&mode=normal")
+    """The owner's bug: internet works, the provider is slow, an offline model is ready. Wait online."""
+    tag = "B-slow-online-with-model"
+    mock("/control?delay=12&mode=normal")
     open_home()
     focus_field(tag)
     logcat_clear()
     stopped = record(mic_cache, wav, stubs, tag)
-    time.sleep(max(0, 4.0 - (time.monotonic() - stopped)))
-    screenshot(f"{tag}-online-4s")
+    time.sleep(max(0, 8.0 - (time.monotonic() - stopped)))
+    screenshot(f"{tag}-still-online-8s")
+    text = wait_for(lambda: (t := field_text()) and ONLINE_TEXT in t and t, 40, 1.0) or field_text()
+    screenshot(f"{tag}-result")
+    lat = latency_lines()
+    logcat_save(tag)
+    check(tag, "no offline switch while the provider is reachable", "phase=offlineSwitch" not in lat,
+          repr(offline_switch_line(lat)))
+    check(tag, "online text typed after the slow answer", text and ONLINE_TEXT in text, repr(text))
+    req = last_request()
+    check(tag, "mock answered after its 12 s delay", req.get("outcome") == "answered" and
+          req.get("afterSeconds", 0) >= 11.5, json.dumps(req))
+    probes = mock("/probes")
+    check(tag, "reachability probe answered", probes.get("answered", 0) >= 1, json.dumps(probes))
+    mock("/control?delay=0")
+
+
+def scenario_no_internet_with_model(mic_cache, wav, stubs):
+    tag = "F-no-internet-with-model"
+    mock("/control?delay=0&mode=blackhole")
+    open_home()
+    focus_field(tag)
+    logcat_clear()
+    record(mic_cache, wav, stubs, tag)
     line = wait_for(lambda: offline_switch_line(latency_lines()), 20, 0.3)
     time.sleep(0.8)
     screenshot(f"{tag}-offline")
     text = wait_for(lambda: field_text(), 120, 2.0)
     screenshot(f"{tag}-result")
     logcat_save(tag)
-    check(tag, "offline switch fired on the deadline", line and line[0] == "deadline", repr(line))
+    check(tag, "offline switch fired: no internet", line and line[0] == "noInternet", repr(line))
     if line:
         ms = int(line[1])
-        check(tag, "switch at ~10 s of transcribing", 9000 <= ms <= 12500, f"{ms} ms")
+        check(tag, "switch at ~5 s", 4500 <= ms <= 7500, f"{ms} ms")
         check(tag, "downloaded model used", line[2] == MODEL_ID and line[3] == "true", repr(line))
     check(tag, "offline text typed (not the online text)", text and ONLINE_TEXT not in text, repr(text))
     check(tag, "offline text is the spoken sentence", heard_speech(text), f"{spoken_words(text)} words")
     req = last_request()
     check(tag, "online request cancelled by the app", req.get("outcome") == "client-closed" and
-          req.get("afterSeconds", 99) <= 12.5, json.dumps(req))
+          req.get("afterSeconds", 99) <= 7.5, json.dumps(req))
+    mock("/control?mode=normal")
+
+
+def scenario_no_network_with_model(mic_cache, wav, stubs):
+    """Flight mode: the phone knows it has no network, so the switch does not wait at all."""
+    tag = "G-no-network-with-model"
+    mock("/control?delay=0&mode=normal")
+    open_home()
+    focus_field(tag)
+    sh("cmd connectivity airplane-mode enable")
+    try:
+        time.sleep(4)
+        logcat_clear()
+        record(mic_cache, wav, stubs, tag)
+        line = wait_for(lambda: offline_switch_line(latency_lines()), 20, 0.3)
+        text = wait_for(lambda: field_text(), 120, 2.0)
+        screenshot(f"{tag}-result")
+        logcat_save(tag)
+    finally:
+        sh("cmd connectivity airplane-mode disable", check=False)
+    check(tag, "offline switch fired: no network", line and line[0] == "noNetwork", repr(line))
+    if line:
+        check(tag, "switch without waiting", int(line[1]) <= 2000, f"{line[1]} ms")
+        check(tag, "downloaded model used", line[2] == MODEL_ID and line[3] == "true", repr(line))
+    check(tag, "offline text typed", text and ONLINE_TEXT not in text, repr(text))
+    check(tag, "offline text is the spoken sentence", heard_speech(text), f"{spoken_words(text)} words")
 
 
 def make_stubs(dest):
@@ -686,7 +741,7 @@ def main():
         "dictate__transcription_provider_id": ("s", encode(CUSTOM_ID)),
         "dictate__push_to_talk": ("b", "false"),
         "dictate__push_to_talk_default_migrated": ("b", "true"),
-        "dictate__offline_switch_seconds": ("i", "10"),
+        "dictate__offline_switch_no_internet_seconds": ("i", "5"),
         # The switch is what is under test, not the silence gate: a quiet CI microphone must not turn
         # scenarios A and C into "no speech detected".
         "dictate__skip_silent_recordings": ("b", "false"),
@@ -696,7 +751,8 @@ def main():
 
     mic_cache = {}
     steps = [("A", scenario_online), ("E", scenario_hold_backspace), ("C", scenario_no_model), ("install-model", None),
-             ("D", scenario_network_error), ("B", scenario_slow_with_model), ("U", scenario_updater)]
+             ("D", scenario_network_error), ("B", scenario_slow_with_model), ("F", scenario_no_internet_with_model),
+             ("U", scenario_updater), ("G", scenario_no_network_with_model)]
     for name, fn in steps:
         try:
             if fn is None:

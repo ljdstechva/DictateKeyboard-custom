@@ -165,7 +165,7 @@ jobs:
             "Label: Dictate (Custom)" \
             "SHA-256: ${SHA}" \
             "" \
-            "Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); offline switch: online transcription that takes longer than 10 s goes to the downloaded offline model (AI providers > Switch to offline model after); animated transcribing indicator; holding Backspace deletes whole words (Gestures > Delete key long press); in-app updater under Settings > Updates (custom build); offline translation library not bundled.")
+            "Changes vs upstream: 'Allow system back gesture over keyboard' setting (Gestures > Other gestures, on by default); offline switch: when the provider cannot be reached within 5 s (no internet), or the phone has no network, the recording goes to the downloaded offline model; with internet the online text is always waited for (AI providers > Switch to offline model when no internet); animated transcribing indicator; holding Backspace deletes whole words (Gestures > Delete key long press); in-app updater under Settings > Updates (custom build); offline translation library not bundled.")
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --clobber
           else
